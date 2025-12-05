@@ -36,7 +36,6 @@ app.post('/payfast-notify', async (req, res) => {
         if (response.data === 'VALID') {
             const bookingId = data.m_payment_id;
 
-            // Update booking in Firestore
             await db.collection(bookingsCollection).doc(bookingId).set({
                 status: 'paid',
                 amount: data.amount_gross,
@@ -57,6 +56,5 @@ app.post('/payfast-notify', async (req, res) => {
     }
 });
 
-// Start server on Render assigned PORT
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Server running on port ${port}`));
