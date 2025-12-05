@@ -7,20 +7,21 @@ const querystring = require('querystring');
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 
-// Initialize Firebase
-const serviceAccount = require('./serviceAccountKey.json'); // Download this from Firebase
+// Initialize Firebase using environment variable from Render
+const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
+
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
 });
 
 const db = admin.firestore();
-const bookingsCollection = 'bookings'; // Change to your collection name
+const bookingsCollection = 'bookings'; // Change to your Firestore collection name
 
 app.post('/payfast-notify', async (req, res) => {
     const data = req.body;
 
     try {
-        // Verify with PayFast
+        // Verify ITN with PayFast
         const response = await axios.post(
             'https://www.payfast.co.za/eng/query/validate',
             querystring.stringify(data),
@@ -29,6 +30,8 @@ app.post('/payfast-notify', async (req, res) => {
 
         if (response.data === 'VALID') {
             const bookingId = data.m_payment_id;
+
+            // Update booking in Firestore
             await db.collection(bookingsCollection).doc(bookingId).set({
                 status: 'paid',
                 amount: data.amount_gross,
@@ -43,7 +46,7 @@ app.post('/payfast-notify', async (req, res) => {
             res.status(400).send('Invalid ITN');
         }
     } catch (err) {
-        console.error(err);
+        console.error('Error processing ITN:', err);
         res.status(500).send('Server error');
     }
 });
