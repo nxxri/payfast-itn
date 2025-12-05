@@ -8,6 +8,11 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 
 // Initialize Firebase using environment variable from Render
+if (!process.env.FIREBASE_KEY) {
+    console.error('FIREBASE_KEY environment variable not set!');
+    process.exit(1);
+}
+
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 
 admin.initializeApp({
@@ -36,6 +41,7 @@ app.post('/payfast-notify', async (req, res) => {
         if (response.data === 'VALID') {
             const bookingId = data.m_payment_id;
 
+            // Update booking in Firestore
             await db.collection(bookingsCollection).doc(bookingId).set({
                 status: 'paid',
                 amount: data.amount_gross,
@@ -48,7 +54,7 @@ app.post('/payfast-notify', async (req, res) => {
             console.error('Invalid ITN:', data);
         }
 
-        // Always respond 200 to PayFast
+        // Always respond 200 to PayFast to acknowledge receipt
         res.status(200).send('OK');
     } catch (err) {
         console.error('Error processing ITN:', err);
@@ -56,5 +62,6 @@ app.post('/payfast-notify', async (req, res) => {
     }
 });
 
+// Start server on Render assigned PORT
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Server running on port ${port}`));
