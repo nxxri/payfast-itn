@@ -6,7 +6,8 @@ const querystring = require('querystring');
 const crypto = require('crypto');
 
 const app = express();
-// ===== FIX GLOBAL CORS (must be at the VERY TOP) =====
+
+// ===== CORS =====
 app.use((req, res, next) => {
     res.header("Access-Control-Allow-Origin", "*");
     res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -15,7 +16,6 @@ app.use((req, res, next) => {
     if (req.method === "OPTIONS") {
         return res.sendStatus(200);
     }
-
     next();
 });
 
@@ -23,7 +23,7 @@ app.use((req, res, next) => {
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.json());
 
-// Debug middleware for all requests
+// Debug middleware
 app.use((req, res, next) => {
     console.log(`📥 ${req.method} ${req.url}`);
     if (req.body && Object.keys(req.body).length > 0) {
@@ -51,69 +51,106 @@ const PAYFAST_CONFIG = {
     sandboxUrl: "https://sandbox.payfast.co.za/eng/process"
 };
 
-// ========== HELPER FUNCTIONS ==========
-function generateSignature(data, passPhrase = null) {
-    console.log('🔍 Generating signature with passphrase:', passPhrase || 'NONE');
+// ========== PAYFAST-SPECIFIC HELPER FUNCTIONS ==========
+function generatePayFastSignature(data, passPhrase = null) {
+    console.log('🔍 Generating PayFast signature...');
 
     // Remove signature from data if present
     const signatureData = { ...data };
     delete signatureData.signature;
 
-    // Create parameter string in alphabetical order
-    let pfOutput = '';
+    // PayFast expects parameters in alphabetical order
     const sortedKeys = Object.keys(signatureData).sort();
+    let pfOutput = '';
 
     for (let key of sortedKeys) {
-        // Only include parameters that are not empty strings
-        if (signatureData[key] !== undefined && signatureData[key] !== null && signatureData[key] !== '') {
-            const encodedValue = encodeURIComponent(signatureData[key].toString()).replace(/%20/g, '+');
+        // PayFast wants to include ALL parameters, even empty strings
+        if (signatureData[key] !== undefined && signatureData[key] !== null) {
+            const value = signatureData[key].toString();
+            // PayFast's exact encoding requirements
+            const encodedValue = encodeURIComponent(value)
+                .replace(/%20/g, '+')
+                .replace(/'/g, '%27')
+                .replace(/"/g, '%22')
+                .replace(/\(/g, '%28')
+                .replace(/\)/g, '%29')
+                .replace(/\*/g, '%2A')
+                .replace(/!/g, '%21');
             pfOutput += `${key}=${encodedValue}&`;
         }
     }
 
     // Remove trailing ampersand
-    pfOutput = pfOutput.slice(0, -1);
+    if (pfOutput.endsWith('&')) {
+        pfOutput = pfOutput.slice(0, -1);
+    }
 
-    // IMPORTANT: Add passphrase if it's provided (even if it's empty string, some PayFast accounts need it)
-    if (passPhrase !== null && passPhrase !== undefined) {
-        const encodedPassphrase = encodeURIComponent(passPhrase).replace(/%20/g, '+');
+    // Add passphrase if provided (PayFast adds it at the end)
+    if (passPhrase !== null && passPhrase !== undefined && passPhrase !== '') {
+        const encodedPassphrase = encodeURIComponent(passPhrase)
+            .replace(/%20/g, '+')
+            .replace(/'/g, '%27')
+            .replace(/"/g, '%22')
+            .replace(/\(/g, '%28')
+            .replace(/\)/g, '%29')
+            .replace(/\*/g, '%2A')
+            .replace(/!/g, '%21');
         pfOutput += `&passphrase=${encodedPassphrase}`;
     }
 
-    console.log('🔍 Signature string:', pfOutput);
+    console.log('🔍 Signature string for MD5:', pfOutput);
+    console.log('🔍 Passphrase used:', passPhrase || 'NONE');
 
     // Generate MD5 hash
     return crypto.createHash('md5').update(pfOutput).digest('hex');
 }
 
 function verifyPayFastSignature(data, passphrase = '') {
-    console.log('🔍 Verifying signature with passphrase:', passphrase || 'NONE');
+    console.log('🔍 Verifying PayFast signature...');
 
     const submittedSignature = data.signature;
 
+    // PayFast sends the signature, we need to recalculate it
+    const signatureData = { ...data };
+    delete signatureData.signature;
+
+    const sortedKeys = Object.keys(signatureData).sort();
     let pfParamString = '';
-    const sortedKeys = Object.keys(data).sort();
 
     for (const key of sortedKeys) {
-        if (key !== 'signature' &&
-            data[key] !== undefined &&
-            data[key] !== null &&
-            data[key] !== '') {
-            const encodedValue = encodeURIComponent(data[key].toString()).replace(/%20/g, '+');
+        if (signatureData[key] !== undefined && signatureData[key] !== null) {
+            const value = signatureData[key].toString();
+            const encodedValue = encodeURIComponent(value)
+                .replace(/%20/g, '+')
+                .replace(/'/g, '%27')
+                .replace(/"/g, '%22')
+                .replace(/\(/g, '%28')
+                .replace(/\)/g, '%29')
+                .replace(/\*/g, '%2A')
+                .replace(/!/g, '%21');
             pfParamString += `${key}=${encodedValue}&`;
         }
     }
 
-    pfParamString = pfParamString.slice(0, -1);
+    if (pfParamString.endsWith('&')) {
+        pfParamString = pfParamString.slice(0, -1);
+    }
 
-    if (passphrase !== null && passphrase !== undefined) {
-        const encodedPassphrase = encodeURIComponent(passphrase).replace(/%20/g, '+');
+    if (passphrase !== null && passphrase !== undefined && passphrase !== '') {
+        const encodedPassphrase = encodeURIComponent(passphrase)
+            .replace(/%20/g, '+')
+            .replace(/'/g, '%27')
+            .replace(/"/g, '%22')
+            .replace(/\(/g, '%28')
+            .replace(/\)/g, '%29')
+            .replace(/\*/g, '%2A')
+            .replace(/!/g, '%21');
         pfParamString += `&passphrase=${encodedPassphrase}`;
     }
 
     const calculatedSignature = crypto.createHash('md5').update(pfParamString).digest('hex');
 
-    console.log('🔍 Verification:');
+    console.log('🔍 Signature comparison:');
     console.log('Submitted:', submittedSignature);
     console.log('Calculated:', calculatedSignature);
     console.log('Match?', calculatedSignature === submittedSignature);
@@ -121,7 +158,7 @@ function verifyPayFastSignature(data, passphrase = '') {
     return calculatedSignature === submittedSignature;
 }
 
-// ========== ROUTE 1: PROCESS PAYMENT (FIXED) ==========
+// ========== SIMPLIFIED PROCESS PAYMENT ==========
 app.post('/process-payment', (req, res) => {
     try {
         console.log('🔵 Payment request received:', req.body);
@@ -131,7 +168,7 @@ app.post('/process-payment', (req, res) => {
             cell_number, event_id, ticket_number, booking_id, ticket_quantity
         } = req.body;
 
-        // Validation
+        // Basic validation
         if (!amount || !item_name || !email_address || !booking_id) {
             return res.status(400).json({
                 success: false,
@@ -140,15 +177,14 @@ app.post('/process-payment', (req, res) => {
             });
         }
 
-        // Get current Render URL dynamically
         const renderUrl = process.env.RENDER_EXTERNAL_URL || `https://${req.get('host')}`;
 
-        // Build payment data
+        // SIMPLIFIED payment data - PayFast prefers minimal fields
         const paymentData = {
             merchant_id: PAYFAST_CONFIG.merchantId,
             merchant_key: PAYFAST_CONFIG.merchantKey,
-            return_url: `${PAYFAST_CONFIG.returnUrl}&booking_id=${booking_id}`,
-            cancel_url: `${PAYFAST_CONFIG.cancelUrl}&booking_id=${booking_id}`,
+            return_url: PAYFAST_CONFIG.returnUrl + '&booking_id=' + booking_id,
+            cancel_url: PAYFAST_CONFIG.cancelUrl + '&booking_id=' + booking_id,
             notify_url: `${renderUrl}/payfast-notify`,
             name_first: name_first || '',
             name_last: name_last || '',
@@ -156,9 +192,6 @@ app.post('/process-payment', (req, res) => {
             cell_number: cell_number || '',
             amount: parseFloat(amount).toFixed(2),
             item_name: item_name.substring(0, 100),
-            item_description: `Booking ${ticket_number} for ${item_name}`.substring(0, 255),
-            email_confirmation: '1',
-            confirmation_address: email_address,
             m_payment_id: booking_id,
             custom_str1: event_id || '',
             custom_str2: ticket_number || '',
@@ -166,31 +199,30 @@ app.post('/process-payment', (req, res) => {
             custom_int1: ticket_quantity || 1
         };
 
-        // Remove completely empty fields (null or empty string)
+        // DON'T remove empty strings - PayFast includes them in signature
+        // Only remove null/undefined
         Object.keys(paymentData).forEach(key => {
-            if (paymentData[key] === '' || paymentData[key] === null || paymentData[key] === undefined) {
+            if (paymentData[key] === null || paymentData[key] === undefined) {
                 delete paymentData[key];
             }
         });
 
-        console.log('🟡 Cleaned payment data:', paymentData);
+        console.log('🟡 Payment data for signature:', paymentData);
 
-        // CRITICAL FIX: Always use the passphrase from config
-        // PayFast expects the passphrase to be included in signature calculation if it's set
-        const signature = generateSignature(paymentData, PAYFAST_CONFIG.passphrase);
+        // Generate signature with passphrase
+        const signature = generatePayFastSignature(paymentData, PAYFAST_CONFIG.passphrase);
         paymentData.signature = signature;
 
         console.log('🔍 Generated signature:', signature);
         console.log('🔍 Mode:', PAYFAST_CONFIG.sandbox ? 'SANDBOX' : 'PRODUCTION');
         console.log('🔍 Merchant ID:', PAYFAST_CONFIG.merchantId);
-        console.log('🔍 Has passphrase?', PAYFAST_CONFIG.passphrase ? 'YES' : 'NO');
 
         // Create redirect URL
         const payfastUrl = PAYFAST_CONFIG.sandbox ? PAYFAST_CONFIG.sandboxUrl : PAYFAST_CONFIG.productionUrl;
         const queryString = new URLSearchParams(paymentData).toString();
         const redirectUrl = `${payfastUrl}?${queryString}`;
 
-        console.log('🟢 Redirect URL (first 200 chars):', redirectUrl.substring(0, 200));
+        console.log('🟢 Full redirect URL:', redirectUrl);
 
         res.json({
             success: true,
@@ -209,56 +241,89 @@ app.post('/process-payment', (req, res) => {
     }
 });
 
-// ========== TEST PAYFAST SIGNATURE ENDPOINT ==========
-app.get('/test-signature', (req, res) => {
-    try {
-        const testData = {
-            merchant_id: PAYFAST_CONFIG.merchantId || '10000100',
-            merchant_key: PAYFAST_CONFIG.merchantKey || '46f0cd694581a',
-            amount: '150.00',
-            item_name: 'Test Event',
-            m_payment_id: 'test-' + Date.now()
-        };
+// ========== MANUAL TEST ENDPOINT ==========
+app.get('/manual-test', (req, res) => {
+    const testData = {
+        merchant_id: PAYFAST_CONFIG.merchantId,
+        merchant_key: PAYFAST_CONFIG.merchantKey,
+        return_url: PAYFAST_CONFIG.returnUrl + '&booking_id=test123',
+        cancel_url: PAYFAST_CONFIG.cancelUrl + '&booking_id=test123',
+        notify_url: 'https://payfast-itn.onrender.com/payfast-notify',
+        name_first: 'Test',
+        name_last: 'User',
+        email_address: 'test@example.com',
+        amount: '5.00',
+        item_name: 'Salwa Collective Test',
+        m_payment_id: 'test-' + Date.now()
+    };
 
-        console.log('🧪 TESTING SIGNATURE GENERATION');
-        console.log('Sandbox Mode:', PAYFAST_CONFIG.sandbox);
-        console.log('Passphrase:', PAYFAST_CONFIG.passphrase || 'EMPTY');
+    const signature = generatePayFastSignature(testData, PAYFAST_CONFIG.passphrase);
+    testData.signature = signature;
 
-        // Test different scenarios
-        const results = {
-            withoutPassphrase: generateSignature(testData, null),
-            withEmptyPassphrase: generateSignature(testData, ''),
-            withConfigPassphrase: generateSignature(testData, PAYFAST_CONFIG.passphrase)
-        };
+    const queryString = new URLSearchParams(testData).toString();
+    const testUrl = `${PAYFAST_CONFIG.sandboxUrl}?${queryString}`;
 
-        res.json({
-            success: true,
-            config: {
-                sandbox: PAYFAST_CONFIG.sandbox,
-                hasPassphrase: !!PAYFAST_CONFIG.passphrase,
-                merchantIdSet: !!PAYFAST_CONFIG.merchantId,
-                merchantKeySet: !!PAYFAST_CONFIG.merchantKey
-            },
-            signatures: results,
-            recommendation: PAYFAST_CONFIG.passphrase ?
-                'Use withConfigPassphrase (passphrase is set)' :
-                'Use withoutPassphrase (no passphrase set)'
-        });
-
-    } catch (error) {
-        console.error('Test error:', error);
-        res.status(500).json({ success: false, error: error.message });
-    }
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>PayFast Manual Test</title>
+            <style>
+                body { font-family: Arial, sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }
+                .container { background: #f5f5f5; padding: 20px; border-radius: 10px; }
+                .url-box { background: white; padding: 15px; border: 1px solid #ddd; border-radius: 5px; word-break: break-all; }
+                .btn { background: #4CAF50; color: white; padding: 12px 24px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }
+                .test-card { background: #e8f5e9; padding: 15px; border-radius: 5px; margin-top: 20px; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>🧪 PayFast Sandbox Test</h1>
+                <p><strong>Status:</strong> Using merchant ID: ${PAYFAST_CONFIG.merchantId}</p>
+                <p><strong>Passphrase:</strong> ${PAYFAST_CONFIG.passphrase ? 'SET' : 'NOT SET'}</p>
+                <p><strong>Signature:</strong> ${signature.substring(0, 20)}...</p>
+                
+                <h3>Test Payment Link:</h3>
+                <div class="url-box">${testUrl}</div>
+                
+                <p style="margin-top: 20px;">
+                    <a href="${testUrl}" target="_blank" class="btn">Open PayFast Payment Page</a>
+                </p>
+                
+                <div class="test-card">
+                    <h3>💳 Test Card Details:</h3>
+                    <ul>
+                        <li><strong>Card Number:</strong> 4000 0000 0000 0002</li>
+                        <li><strong>Expiry Date:</strong> Any future date (e.g., 12/30)</li>
+                        <li><strong>CVV:</strong> 123</li>
+                        <li><strong>3D Secure Password:</strong> payfast</li>
+                    </ul>
+                    <p><em>This is a test payment - no real money will be charged.</em></p>
+                </div>
+                
+                <div style="margin-top: 30px; padding: 15px; background: #fff3cd; border-radius: 5px;">
+                    <h3>⚠️ Troubleshooting</h3>
+                    <p>If you get "signature mismatch":</p>
+                    <ol>
+                        <li>Check your PayFast merchant dashboard passphrase setting</li>
+                        <li>Verify merchant ID and key in Render environment variables</li>
+                        <li>Try clearing browser cache and cookies</li>
+                    </ol>
+                </div>
+            </div>
+        </body>
+        </html>
+    `);
 });
 
-// ========== ROUTE 2: ITN HANDLER ==========
+// ========== ITN HANDLER ==========
 app.post('/payfast-notify', async (req, res) => {
     const data = req.body;
 
     try {
         console.log('🟣 ITN received:', JSON.stringify(data, null, 2));
 
-        // Verify signature with the same passphrase logic
+        // Verify signature
         const isValidSignature = verifyPayFastSignature(data, PAYFAST_CONFIG.passphrase);
 
         if (!isValidSignature) {
@@ -347,7 +412,7 @@ app.post('/payfast-notify', async (req, res) => {
     }
 });
 
-// ========== ROUTE 3: CHECK PAYMENT STATUS ==========
+// ========== CHECK PAYMENT STATUS ==========
 app.post('/check-payment-status', async (req, res) => {
     try {
         const { bookingId } = req.body;
@@ -394,8 +459,10 @@ app.post('/check-payment-status', async (req, res) => {
     }
 });
 
-// ========== ROUTE 4: HEALTH CHECK ==========
+// ========== HEALTH CHECK ==========
 app.get('/health', (req, res) => {
+    const isDemoAccount = PAYFAST_CONFIG.merchantId === '10000100';
+
     res.json({
         status: 'healthy',
         timestamp: new Date().toISOString(),
@@ -404,15 +471,18 @@ app.get('/health', (req, res) => {
             processPayment: 'POST /process-payment',
             itnHandler: 'POST /payfast-notify',
             checkStatus: 'POST /check-payment-status',
-            testSignature: 'GET /test-signature'
+            manualTest: 'GET /manual-test'
         },
         config: {
-            merchantId: PAYFAST_CONFIG.merchantId ? 'SET' : 'MISSING',
-            merchantKey: PAYFAST_CONFIG.merchantKey ? 'SET' : 'MISSING',
-            passphrase: PAYFAST_CONFIG.passphrase ? 'SET' : 'MISSING',
+            merchantId: PAYFAST_CONFIG.merchantId ? PAYFAST_CONFIG.merchantId.substring(0, 4) + '...' : 'MISSING',
+            merchantKey: PAYFAST_CONFIG.merchantKey ? PAYFAST_CONFIG.merchantKey.substring(0, 4) + '...' : 'MISSING',
+            passphrase: PAYFAST_CONFIG.passphrase ? 'SET (' + PAYFAST_CONFIG.passphrase.substring(0, 4) + '...)' : 'MISSING',
             sandbox: PAYFAST_CONFIG.sandbox,
             firebase: serviceAccount.project_id ? 'CONNECTED' : 'DISCONNECTED'
-        }
+        },
+        warning: isDemoAccount ?
+            '⚠️ USING PAYFAST DEMO ACCOUNT! Update with YOUR merchant ID' :
+            '✅ Using your merchant account'
     });
 });
 
@@ -429,14 +499,14 @@ app.listen(PORT, () => {
     ├── POST /process-payment    - Create payment links
     ├── POST /payfast-notify     - Receive ITN notifications
     ├── POST /check-payment-status - Check booking status
-    ├── GET  /test-signature     - Test signature generation
+    ├── GET  /manual-test        - Manual PayFast test page
     └── GET  /health             - Server health check
     
     ⚠️  Make sure these env vars are set in Render:
     ├── FIREBASE_KEY
-    ├── PAYFAST_MERCHANT_ID
-    ├── PAYFAST_MERCHANT_KEY
-    ├── PAYFAST_PASSPHRASE
+    ├── PAYFAST_MERCHANT_ID=10044213
+    ├── PAYFAST_MERCHANT_KEY=9s7vajpkdyycf
+    ├── PAYFAST_PASSPHRASE=salwa20242024
     └── PAYFAST_SANDBOX=true
     `);
 });
