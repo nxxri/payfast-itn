@@ -47,15 +47,19 @@ const PAYFAST_CONFIG = {
 function generateSignature(data, passPhrase = null) {
     let pfOutput = '';
     const sortedKeys = Object.keys(data).sort();
+
     for (let key of sortedKeys) {
         if (data[key] !== '') {
             pfOutput += `${key}=${encodeURIComponent(data[key]).replace(/%20/g, '+')}&`;
         }
     }
+
     pfOutput = pfOutput.slice(0, -1);
+
     if (passPhrase) {
-        pfOutput += `&passphrase=${encodeURIComponent(passPhrase)}`;
+        pfOutput += `&passphrase=${encodeURIComponent(passPhrase).replace(/%20/g, '+')}`;
     }
+
     return crypto.createHash('md5').update(pfOutput).digest('hex');
 }
 
