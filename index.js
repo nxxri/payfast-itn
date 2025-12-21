@@ -340,7 +340,7 @@ app.get('/manual-test', (req, res) => {
         merchant_key: PAYFAST_CONFIG.merchantKey,
         return_url: returnUrl,
         cancel_url: cancelUrl,
-        notify_url: 'https://salwa-payment-backend-1.onrender.com/payfast-notify',
+        notify_url: 'https://payfast-itn.onrender.com',
         name_first: 'Test',
         name_last: 'User',
         email_address: 'test@example.com',
