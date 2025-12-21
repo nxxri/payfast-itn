@@ -1,4 +1,5 @@
-﻿const express = require('express');
+﻿[file content begin]
+const express = require('express');
 const bodyParser = require('body-parser');
 const admin = require('firebase-admin');
 const axios = require('axios');
@@ -44,9 +45,9 @@ const PAYFAST_CONFIG = {
     merchantId: process.env.PAYFAST_MERCHANT_ID,
     merchantKey: process.env.PAYFAST_MERCHANT_KEY,
     passphrase: process.env.PAYFAST_PASSPHRASE || '',
-    sandbox: process.env.PAYFAST_SANDBOX === 'true',
+    sandbox: process.env.PAYFAST_SANDBOX === 'false',
     returnUrl: "https://salwacollective.co.za/payment-result.html?payment_return=1",
-    cancelUrl: "https://salwacollective.co.za/payment-result.html?payment_return=1",
+    cancelUrl: "https://salwacollective.co.za/payment-result.html?payment_return=0",
     productionUrl: "https://www.payfast.co.za/eng/process",
     sandboxUrl: "https://sandbox.payfast.co.za/eng/process"
 };
@@ -157,6 +158,168 @@ function verifyPayFastSignature(data, passphrase = '') {
     return calculatedSignature === submittedSignature;
 }
 
+// ========== NEW: PAYFAST IMMEDIATE VALIDATION ==========
+async function verifyPaymentWithPayFast(m_payment_id) {
+    console.log(`🔄 Verifying payment with PayFast: ${m_payment_id}`);
+
+    try {
+        const validateUrl = PAYFAST_CONFIG.sandbox
+            ? 'https://sandbox.payfast.co.za/eng/query/validate'
+            : 'https://www.payfast.co.za/eng/query/validate';
+
+        const requestData = {
+            merchant_id: PAYFAST_CONFIG.merchantId,
+            merchant_key: PAYFAST_CONFIG.merchantKey,
+            m_payment_id: m_payment_id
+        };
+
+        console.log('🔍 Validation request data:', requestData);
+
+        const response = await axios.post(
+            validateUrl,
+            querystring.stringify(requestData),
+            {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'User-Agent': 'Salwa-Collective/1.0'
+                },
+                timeout: 10000
+            }
+        );
+
+        const responseText = response.data.trim();
+        console.log('🔍 PayFast validation response:', responseText);
+
+        // PayFast returns "VALID" if payment is complete
+        if (responseText === 'VALID') {
+            console.log(`✅ Payment ${m_payment_id} validated by PayFast`);
+            return { valid: true };
+        } else if (responseText === 'INVALID') {
+            console.log(`❌ Payment ${m_payment_id} invalid according to PayFast`);
+            return { valid: false, error: 'Payment invalid' };
+        } else if (responseText === 'FAILED') {
+            console.log(`❌ Payment ${m_payment_id} failed according to PayFast`);
+            return { valid: false, error: 'Payment failed' };
+        } else if (responseText === 'CANCELLED') {
+            console.log(`❌ Payment ${m_payment_id} cancelled according to PayFast`);
+            return { valid: false, error: 'Payment cancelled' };
+        } else {
+            console.log(`❓ Unknown PayFast response: ${responseText}`);
+            return { valid: false, error: `Unknown response: ${responseText}` };
+        }
+
+    } catch (error) {
+        console.error('🔴 PayFast validation error:', error.message);
+        return {
+            valid: false,
+            error: error.message,
+            status: error.response?.status
+        };
+    }
+}
+
+// ========== NEW: INSTANT PAYMENT VERIFICATION ENDPOINT ==========
+app.post('/verify-payment', async (req, res) => {
+    try {
+        const { bookingId } = req.body;
+
+        if (!bookingId) {
+            return res.status(400).json({
+                success: false,
+                error: 'Booking ID required'
+            });
+        }
+
+        console.log(`🔍 Starting immediate verification for booking: ${bookingId}`);
+
+        // Step 1: Verify with PayFast API
+        const validationResult = await verifyPaymentWithPayFast(bookingId);
+
+        if (!validationResult.valid) {
+            console.log(`❌ PayFast validation failed: ${validationResult.error}`);
+
+            // Update Firestore to reflect failed/cancelled status
+            const updateData = {
+                paymentStatus: validationResult.error?.includes('cancelled') ? 'CANCELLED' : 'FAILED',
+                status: validationResult.error?.includes('cancelled') ? 'cancelled' : 'failed',
+                isPaid: false,
+                cancellationReason: validationResult.error || 'payment_validation_failed',
+                cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
+                lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+                validationAttempted: true,
+                validationError: validationResult.error
+            };
+
+            await db.collection('bookings').doc(bookingId).update(updateData);
+
+            return res.json({
+                success: false,
+                valid: false,
+                message: validationResult.error,
+                bookingId: bookingId,
+                status: 'failed'
+            });
+        }
+
+        // Step 2: Get booking data from Firestore
+        const bookingDoc = await db.collection('bookings').doc(bookingId).get();
+
+        if (!bookingDoc.exists) {
+            return res.status(404).json({
+                success: false,
+                error: 'Booking not found',
+                bookingId: bookingId
+            });
+        }
+
+        const bookingData = bookingDoc.data();
+
+        // Step 3: Update booking as confirmed
+        const updateData = {
+            paymentStatus: 'COMPLETE',
+            status: 'confirmed',
+            isPaid: true,
+            paymentDate: admin.firestore.FieldValue.serverTimestamp(),
+            lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+            validationSource: 'payfast_immediate',
+            validatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            itnExpected: true // Still expect ITN later for backup
+        };
+
+        await db.collection('bookings').doc(bookingId).update(updateData);
+
+        console.log(`✅ Booking ${bookingId} instantly confirmed via PayFast validation`);
+
+        // Step 4: Return updated booking data
+        const updatedBooking = {
+            ...bookingData,
+            ...updateData
+        };
+
+        // Remove server timestamp objects for JSON response
+        delete updatedBooking.createdAt;
+        delete updatedBooking.lastUpdated;
+        delete updatedBooking.paymentDate;
+
+        res.json({
+            success: true,
+            valid: true,
+            message: 'Payment instantly confirmed via PayFast',
+            bookingId: bookingId,
+            status: 'confirmed',
+            booking: updatedBooking
+        });
+
+    } catch (error) {
+        console.error('🔴 Payment verification error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Payment verification failed',
+            message: error.message
+        });
+    }
+});
+
 // ========== SIMPLIFIED PROCESS PAYMENT ==========
 app.post('/process-payment', async (req, res) => {
     try {
@@ -213,7 +376,7 @@ app.post('/process-payment', async (req, res) => {
         console.log('🔍 Generated signature:', signature);
         console.log('🔍 Mode:', PAYFAST_CONFIG.sandbox ? 'SANDBOX' : 'PRODUCTION');
 
-        // Store booking with timeout tracking in Firestore
+        // Store booking with immediate validation tracking
         try {
             const bookingData = {
                 // Core booking info from frontend
@@ -238,6 +401,7 @@ app.post('/process-payment', async (req, res) => {
                 paymentStatus: 'PENDING',
                 isPaid: false,
                 itnReceived: false,
+                validationAttempted: false,
 
                 // Timestamps
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -261,7 +425,7 @@ app.post('/process-payment', async (req, res) => {
             };
 
             await db.collection('bookings').doc(booking_id).set(bookingData, { merge: true });
-            console.log(`✅ Booking ${booking_id} stored in Firestore with 30-minute timeout`);
+            console.log(`✅ Booking ${booking_id} stored in Firestore with immediate validation tracking`);
 
         } catch (firestoreError) {
             console.error('🔴 Firestore save error:', firestoreError);
@@ -366,7 +530,7 @@ app.get('/manual-test', (req, res) => {
     `);
 });
 
-// ========== ITN HANDLER ==========
+// ========== ITN HANDLER (UPDATED FOR IMMEDIATE VALIDATION) ==========
 app.post('/payfast-notify', async (req, res) => {
     const data = req.body;
 
@@ -380,6 +544,32 @@ app.post('/payfast-notify', async (req, res) => {
             return res.status(400).send('Invalid signature');
         }
 
+        const bookingId = data.m_payment_id;
+
+        // Check if booking already confirmed via immediate validation
+        const bookingDoc = await db.collection('bookings').doc(bookingId).get();
+        if (bookingDoc.exists) {
+            const existingBooking = bookingDoc.data();
+
+            if (existingBooking.status === 'confirmed' && existingBooking.isPaid === true) {
+                console.log(`ℹ️ Booking ${bookingId} already confirmed via immediate validation, updating ITN data only`);
+
+                // Still update with ITN data for completeness
+                await db.collection('bookings').doc(bookingId).update({
+                    itnReceived: true,
+                    itnTimestamp: admin.firestore.FieldValue.serverTimestamp(),
+                    lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+                    itnData: data,
+                    paymentStatus: 'COMPLETE', // Ensure status is COMPLETE
+                    itnVerified: true
+                });
+
+                console.log(`✅ ITN data added to already confirmed booking ${bookingId}`);
+                return res.status(200).send('OK');
+            }
+        }
+
+        // If not already confirmed, validate with PayFast (additional safety check)
         const verifyUrl = PAYFAST_CONFIG.sandbox
             ? 'https://sandbox.payfast.co.za/eng/query/validate'
             : 'https://www.payfast.co.za/eng/query/validate';
@@ -397,7 +587,6 @@ app.post('/payfast-notify', async (req, res) => {
         );
 
         if (response.data.trim() === 'VALID') {
-            const bookingId = data.m_payment_id;
             const paymentStatus = data.payment_status?.toUpperCase() || '';
 
             console.log(`🟢 Valid ITN for booking ${bookingId}, status: ${paymentStatus}`);
@@ -413,7 +602,8 @@ app.post('/payfast-notify', async (req, res) => {
                 payerPhone: data.cell_number || '',
                 payerName: `${data.name_first || ''} ${data.name_last || ''}`.trim(),
                 lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
-                itnData: data
+                itnData: data,
+                itnVerified: true
             };
 
             if (paymentStatus === 'COMPLETE') {
@@ -436,7 +626,7 @@ app.post('/payfast-notify', async (req, res) => {
             }
 
             await db.collection('bookings').doc(bookingId).update(updateData);
-            console.log(`✅ Booking ${bookingId} updated in Firebase`);
+            console.log(`✅ Booking ${bookingId} updated in Firebase via ITN`);
 
         } else {
             console.error('🔴 Invalid ITN response from PayFast:', response.data);
@@ -463,7 +653,7 @@ app.post('/payfast-notify', async (req, res) => {
     }
 });
 
-// ========== CHECK PAYMENT STATUS ==========
+// ========== CHECK PAYMENT STATUS (UPDATED) ==========
 app.post('/check-payment-status', async (req, res) => {
     try {
         const { bookingId } = req.body;
@@ -486,6 +676,57 @@ app.post('/check-payment-status', async (req, res) => {
 
         const bookingData = bookingDoc.data();
 
+        // If still pending, try immediate validation
+        if ((bookingData.status === 'pending' || bookingData.status === 'pending_payment') &&
+            !bookingData.validationAttempted) {
+
+            console.log(`🔄 Attempting immediate validation for booking: ${bookingId}`);
+
+            try {
+                const validationResult = await verifyPaymentWithPayFast(bookingId);
+
+                if (validationResult.valid) {
+                    // Update booking as confirmed
+                    const updateData = {
+                        paymentStatus: 'COMPLETE',
+                        status: 'confirmed',
+                        isPaid: true,
+                        paymentDate: admin.firestore.FieldValue.serverTimestamp(),
+                        lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+                        validationAttempted: true,
+                        validationSource: 'auto_check',
+                        validatedAt: admin.firestore.FieldValue.serverTimestamp()
+                    };
+
+                    await db.collection('bookings').doc(bookingId).update(updateData);
+
+                    // Update bookingData for response
+                    Object.assign(bookingData, updateData);
+                    console.log(`✅ Booking ${bookingId} auto-validated via PayFast API`);
+                } else if (validationResult.error?.includes('cancelled') || validationResult.error?.includes('failed')) {
+                    // Update as cancelled/failed
+                    const updateData = {
+                        paymentStatus: validationResult.error.includes('cancelled') ? 'CANCELLED' : 'FAILED',
+                        status: validationResult.error.includes('cancelled') ? 'cancelled' : 'failed',
+                        isPaid: false,
+                        cancellationReason: validationResult.error || 'auto_validation_failed',
+                        cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
+                        lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+                        validationAttempted: true
+                    };
+
+                    await db.collection('bookings').doc(bookingId).update(updateData);
+
+                    // Update bookingData for response
+                    Object.assign(bookingData, updateData);
+                    console.log(`❌ Booking ${bookingId} auto-validated as failed: ${validationResult.error}`);
+                }
+            } catch (validationError) {
+                console.error(`❌ Auto-validation failed for ${bookingId}:`, validationError.message);
+                // Continue with existing booking data
+            }
+        }
+
         // Auto-cancel if payment has timed out
         if (bookingData.paymentTimeout) {
             const timeoutDate = convertFirestoreTimestamp(bookingData.paymentTimeout);
@@ -502,7 +743,8 @@ app.post('/check-payment-status', async (req, res) => {
                     isPaid: false,
                     cancellationReason: 'payment_timeout',
                     cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
-                    lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+                    lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+                    validationAttempted: true
                 };
 
                 await db.collection('bookings').doc(bookingId).update(updateData);
@@ -520,7 +762,8 @@ app.post('/check-payment-status', async (req, res) => {
                     eventDate: bookingData.eventDate || '',
                     userName: bookingData.userName || `${bookingData.customerFirstName || ''} ${bookingData.customerLastName || ''}`.trim(),
                     totalAmount: bookingData.totalAmount || 0,
-                    updatedAt: bookingData.lastUpdated || bookingData.createdAt
+                    updatedAt: bookingData.lastUpdated || bookingData.createdAt,
+                    validationAttempted: bookingData.validationAttempted || false
                 });
             }
         }
@@ -538,7 +781,9 @@ app.post('/check-payment-status', async (req, res) => {
             userName: bookingData.userName || `${bookingData.customerFirstName || ''} ${bookingData.customerLastName || ''}`.trim(),
             totalAmount: bookingData.totalAmount || 0,
             updatedAt: bookingData.lastUpdated || bookingData.createdAt,
-            autoCancelled: false
+            autoCancelled: false,
+            validationAttempted: bookingData.validationAttempted || false,
+            validationSource: bookingData.validationSource || null
         });
 
     } catch (error) {
@@ -569,7 +814,8 @@ app.post('/direct-cancel', async (req, res) => {
             cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
             lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
             itnReceived: false,
-            directCancel: true
+            directCancel: true,
+            validationAttempted: true
         };
 
         await db.collection('bookings').doc(bookingId).update(updateData);
@@ -616,7 +862,8 @@ app.post('/cleanup-stale-payments', async (req, res) => {
                 isPaid: false,
                 cancellationReason: 'stale_payment_cleanup',
                 cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
-                lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+                lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+                validationAttempted: true
             };
 
             batch.update(doc.ref, updateData);
@@ -653,7 +900,8 @@ app.post('/test-cancel/:bookingId', async (req, res) => {
         cancellationReason: 'test_cancellation',
         cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
         lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
-        testMode: true
+        testMode: true,
+        validationAttempted: true
     };
 
     await db.collection('bookings').doc(bookingId).update(updateData);
@@ -673,8 +921,11 @@ app.get('/health', (req, res) => {
         status: 'healthy',
         timestamp: new Date().toISOString(),
         service: 'Salwa Payment Server',
+        version: '2.0.0',
+        features: ['immediate_validation', 'itn_handler', 'auto_cancellation'],
         endpoints: {
             processPayment: 'POST /process-payment',
+            verifyPayment: 'POST /verify-payment',
             itnHandler: 'POST /payfast-notify',
             checkStatus: 'POST /check-payment-status',
             directCancel: 'POST /direct-cancel',
@@ -688,6 +939,7 @@ app.get('/health', (req, res) => {
             merchantKey: PAYFAST_CONFIG.merchantKey ? PAYFAST_CONFIG.merchantKey.substring(0, 4) + '...' : 'MISSING',
             passphrase: PAYFAST_CONFIG.passphrase ? 'SET (' + PAYFAST_CONFIG.passphrase.substring(0, 4) + '...)' : 'MISSING',
             sandbox: PAYFAST_CONFIG.sandbox,
+            immediateValidation: 'ENABLED',
             firebase: serviceAccount.project_id ? 'CONNECTED' : 'DISCONNECTED'
         },
         warning: isDemoAccount ?
@@ -705,8 +957,14 @@ app.listen(PORT, () => {
     🔒 Mode: ${PAYFAST_CONFIG.sandbox ? 'SANDBOX 🧪' : 'PRODUCTION 🏢'}
     🌐 URL: https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost:' + PORT}
     
+    🔥 NEW FEATURE: IMMEDIATE PAYFAST VALIDATION
+    ✓ Instant payment confirmation via PayFast API
+    ✓ No waiting for ITN notifications
+    ✓ Real-time spot updates
+    
     📋 Endpoints:
     ├── POST /process-payment    - Create payment links
+    ├── POST /verify-payment     - Immediate PayFast validation
     ├── POST /payfast-notify     - Receive ITN notifications
     ├── POST /check-payment-status - Check booking status
     ├── POST /direct-cancel      - Manual cancellation
