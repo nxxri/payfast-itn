@@ -19,6 +19,7 @@ const corsOptions = {
             return callback(null, true);
         }
 
+        // ===== CORS Configuration =====
         const allowedOrigins = [
             "https://salwacollective.co.za",
             "http://localhost:3000",
@@ -26,53 +27,44 @@ const corsOptions = {
             "http://127.0.0.1:5500"
         ];
 
-        if (allowedOrigins.includes(origin)) {
-            console.log('🌍 Origin allowed:', origin);
-            callback(null, true);
-        } else {
-            console.log('❌ Origin blocked:', origin);
-            callback(new Error('Not allowed by CORS'));
-        }
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Origin', 'Accept', 'x-requested-with'],
-    exposedHeaders: ['Content-Range', 'X-Content-Range'],
-    maxAge: 86400 // 24 hours
-};
+        const corsOptions = {
+            origin: function (origin, callback) {
+                console.log('🌍 CORS Origin check:', origin);
 
-// Apply CORS middleware
-app.use(cors(corsOptions));
+                // Allow requests with no origin (like mobile apps or curl requests)
+                if (!origin || allowedOrigins.includes(origin)) {
+                    console.log('🌍 Origin allowed:', origin || 'no origin');
+                    callback(null, true);
+                } else {
+                    console.log('❌ Origin blocked:', origin);
+                    callback(new Error('Not allowed by CORS'));
+                }
+            },
+            credentials: true,
+            methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+            allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Origin', 'Accept', 'x-requested-with'],
+            exposedHeaders: ['Content-Range', 'X-Content-Range'],
+            maxAge: 86400 // 24 hours
+        };
 
-// Add explicit preflight handler with logging
-app.options('*', (req, res) => {
-    console.log('🛫 Preflight request for:', req.url);
-    console.log('🛫 Headers:', req.headers);
-    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Origin, Accept');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    res.header('Access-Control-Max-Age', '86400');
-    res.sendStatus(204);
-});
+        // Apply CORS middleware FIRST
+        app.use(cors(corsOptions));
 
-// Add response headers for all routes
-app.use((req, res, next) => {
-    const origin = req.headers.origin;
-    if (origin && [
-        "https://salwacollective.co.za",
-        "http://localhost:3000",
-        "http://localhost:5500",
-        "http://127.0.0.1:5500"
-    ].includes(origin)) {
-        res.header('Access-Control-Allow-Origin', origin);
-    }
-    res.header('Access-Control-Allow-Credentials', 'true');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Origin, Accept');
-    next();
-});
+        // Body parsers
+        app.use(bodyParser.urlencoded({ extended: true }));
+        app.use(bodyParser.json());
 
+        // Add explicit preflight handler
+        app.options('*', cors(corsOptions));
+
+        // Debug middleware
+        app.use((req, res, next) => {
+            console.log(`📥 ${req.method} ${req.url}`);
+            console.log('📦 Request Body:', req.body);
+            console.log('📦 Content-Type:', req.headers['content-type']);
+            console.log('🌍 Origin:', req.headers.origin);
+            next();
+        });
 // ========== BODY PARSER MIDDLEWARE ==========
 // CRITICAL: Parse application/x-www-form-urlencoded
 app.use(bodyParser.urlencoded({ extended: true }));
