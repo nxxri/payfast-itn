@@ -39,50 +39,58 @@ const corsOptions = {
 // Apply CORS middleware FIRST
 app.use(cors(corsOptions));
 
-// Body parsers
-app.use(bodyParser.urlencoded({ extended: true }));
+// Body parsers - CRITICAL FOR ITN: PayFast sends URL-encoded data
+app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
 // Add explicit preflight handler
 app.options('*', cors(corsOptions));
 
-// Debug middleware
-app.use((req, res, next) => {
-    console.log(`📥 ${req.method} ${req.url}`);
-    console.log('📦 Request Body:', req.body);
-    console.log('📦 Content-Type:', req.headers['content-type']);
-    console.log('🌍 Origin:', req.headers.origin);
-    next();
-});
-
 // ========== FIREBASE INIT ==========
-// FIXED: Removed duplicate declaration - only declare once
+let db;
 try {
     const firebaseConfig = JSON.parse(process.env.FIREBASE_KEY || '{}');
 
     if (Object.keys(firebaseConfig).length === 0) {
         console.error('❌ FIREBASE_KEY environment variable is empty or not set');
-    } else {
+        throw new Error('Firebase config missing');
+    }
+
+    // Initialize Firebase only if not already initialized
+    if (!admin.apps.length) {
         admin.initializeApp({
             credential: admin.credential.cert(firebaseConfig),
         });
         console.log('✅ Firebase initialized successfully');
+    } else {
+        console.log('✅ Firebase already initialized');
     }
+
+    db = admin.firestore();
 } catch (error) {
     console.error('❌ Firebase initialization error:', error.message);
+    // Continue without Firebase for testing
+    db = null;
 }
-
-const db = admin.firestore();
 
 // ========== PAYFAST CONFIG ==========
 const PAYFAST_CONFIG = {
-    merchantId: process.env.PAYFAST_MERCHANT_ID,
-    merchantKey: process.env.PAYFAST_MERCHANT_KEY,
+    merchantId: process.env.PAYFAST_MERCHANT_ID || '10000100',
+    merchantKey: process.env.PAYFAST_MERCHANT_KEY || '46f0cd694581a',
     passphrase: process.env.PAYFAST_PASSPHRASE || '',
-    sandbox: process.env.PAYFAST_SANDBOX === 'true',
+    sandbox: process.env.PAYFAST_SANDBOX !== 'false', // Default to true
     productionUrl: "https://www.payfast.co.za/eng/process",
-    sandboxUrl: "https://sandbox.payfast.co.za/eng/process"
+    sandboxUrl: "https://sandbox.payfast.co.za/eng/process",
+    queryUrl: "https://sandbox.payfast.co.za/eng/query/validate"
 };
+
+console.log('🔧 PayFast Config:', {
+    merchantId: PAYFAST_CONFIG.merchantId,
+    merchantKey: PAYFAST_CONFIG.merchantKey.substring(0, 4) + '...',
+    passphrase: PAYFAST_CONFIG.passphrase ? 'SET' : 'NOT SET',
+    sandbox: PAYFAST_CONFIG.sandbox,
+    queryUrl: PAYFAST_CONFIG.queryUrl
+});
 
 // ========== HELPER FUNCTIONS ==========
 function convertFirestoreTimestamp(timestamp) {
@@ -141,8 +149,14 @@ function generatePayFastSignature(data, passPhrase = null) {
 
 function verifyPayFastSignature(data, passphrase = '') {
     console.log('🔍 Verifying PayFast signature...');
+    console.log('🔍 Data received:', data);
 
     const submittedSignature = data.signature;
+    if (!submittedSignature) {
+        console.error('❌ No signature provided in ITN');
+        return false;
+    }
+
     const signatureData = { ...data };
     delete signatureData.signature;
 
@@ -186,8 +200,31 @@ function verifyPayFastSignature(data, passphrase = '') {
     console.log('Submitted:', submittedSignature);
     console.log('Calculated:', calculatedSignature);
     console.log('Match?', calculatedSignature === submittedSignature);
+    console.log('🔍 Param string for MD5:', pfParamString);
 
     return calculatedSignature === submittedSignature;
+}
+
+// ========== CRITICAL: GET CORRECT NOTIFY URL ==========
+function getNotifyUrl() {
+    // Try multiple methods to get the correct URL
+    const renderUrl = process.env.RENDER_EXTERNAL_URL;
+    const renderHostname = process.env.RENDER_EXTERNAL_HOSTNAME;
+
+    let baseUrl;
+
+    if (renderUrl) {
+        baseUrl = renderUrl;
+    } else if (renderHostname) {
+        baseUrl = `https://${renderHostname}`;
+    } else {
+        // Fallback for local development
+        baseUrl = 'https://salwa-payment.onrender.com'; // Your actual Render service name
+    }
+
+    const notifyUrl = `${baseUrl}/payfast-notify`;
+    console.log('🔗 Notify URL configured:', notifyUrl);
+    return notifyUrl;
 }
 
 // ========== SIMPLIFIED PROCESS PAYMENT ==========
@@ -210,11 +247,11 @@ app.post('/process-payment', async (req, res) => {
             });
         }
 
-        const renderUrl = process.env.RENDER_EXTERNAL_URL || `https://${req.get('host')}`;
-
-        // Build URLs dynamically with booking_id
         const returnUrl = `https://salwacollective.co.za/payment-result.html?pf_status=success&booking_id=${booking_id}`;
         const cancelUrl = `https://salwacollective.co.za/payment-result.html?pf_status=cancelled&booking_id=${booking_id}`;
+        const notifyUrl = getNotifyUrl(); // Use the new function
+
+        console.log('🔗 URLs:', { returnUrl, cancelUrl, notifyUrl });
 
         // SIMPLIFIED payment data - PayFast prefers minimal fields
         const paymentData = {
@@ -222,7 +259,7 @@ app.post('/process-payment', async (req, res) => {
             merchant_key: PAYFAST_CONFIG.merchantKey,
             return_url: returnUrl,
             cancel_url: cancelUrl,
-            notify_url: `${renderUrl}/payfast-notify`,
+            notify_url: notifyUrl, // This is CRITICAL
             name_first: name_first || '',
             name_last: name_last || '',
             email_address: email_address,
@@ -236,8 +273,9 @@ app.post('/process-payment', async (req, res) => {
             custom_int1: ticket_quantity || 1
         };
 
+        // Remove any null/undefined values
         Object.keys(paymentData).forEach(key => {
-            if (paymentData[key] === null || paymentData[key] === undefined) {
+            if (paymentData[key] === null || paymentData[key] === undefined || paymentData[key] === '') {
                 delete paymentData[key];
             }
         });
@@ -251,57 +289,62 @@ app.post('/process-payment', async (req, res) => {
         console.log('🔍 Mode:', PAYFAST_CONFIG.sandbox ? 'SANDBOX' : 'PRODUCTION');
 
         // Store booking with timeout tracking in Firestore
-        try {
-            const bookingData = {
-                // Core booking info from frontend
-                bookingId: booking_id,
-                eventId: event_id || '',
-                ticketNumber: ticket_number || '',
-                ticketQuantity: ticket_quantity || 1,
-                totalAmount: parseFloat(amount),
-                itemName: item_name,
-                eventName: event_name || item_name,
-                eventDate: event_date || '',
+        if (db) {
+            try {
+                const bookingData = {
+                    // Core booking info from frontend
+                    bookingId: booking_id,
+                    eventId: event_id || '',
+                    ticketNumber: ticket_number || '',
+                    ticketQuantity: ticket_quantity || 1,
+                    totalAmount: parseFloat(amount),
+                    itemName: item_name,
+                    eventName: event_name || item_name,
+                    eventDate: event_date || '',
 
-                // Customer info
-                customerEmail: email_address,
-                customerFirstName: name_first || '',
-                customerLastName: name_last || '',
-                customerPhone: cell_number || '',
-                userName: `${name_first || ''} ${name_last || ''}`.trim(),
+                    // Customer info
+                    customerEmail: email_address,
+                    customerFirstName: name_first || '',
+                    customerLastName: name_last || '',
+                    customerPhone: cell_number || '',
+                    userName: `${name_first || ''} ${name_last || ''}`.trim(),
 
-                // Payment tracking
-                status: 'pending_payment',
-                paymentStatus: 'PENDING',
-                isPaid: false,
-                itnReceived: false,
+                    // Payment tracking
+                    status: 'pending_payment',
+                    paymentStatus: 'PENDING',
+                    isPaid: false,
+                    itnReceived: false,
 
-                // Timestamps
-                createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+                    // Timestamps
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
 
-                // Timeout tracking - 30 minutes from now
-                paymentTimeout: new Date(Date.now() + 30 * 60 * 1000),
+                    // Timeout tracking - 30 minutes from now
+                    paymentTimeout: new Date(Date.now() + 30 * 60 * 1000),
 
-                // Payment method info
-                paymentMethod: 'payfast',
-                paymentGateway: 'payfast',
-                gatewayData: {
-                    merchantId: PAYFAST_CONFIG.merchantId,
-                    sandbox: PAYFAST_CONFIG.sandbox,
-                    signature: signature
-                },
+                    // Payment method info
+                    paymentMethod: 'payfast',
+                    paymentGateway: 'payfast',
+                    gatewayData: {
+                        merchantId: PAYFAST_CONFIG.merchantId,
+                        sandbox: PAYFAST_CONFIG.sandbox,
+                        signature: signature,
+                        notifyUrl: notifyUrl // Store for debugging
+                    },
 
-                // Additional metadata
-                ipAddress: req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress,
-                userAgent: req.headers['user-agent'] || ''
-            };
+                    // Additional metadata
+                    ipAddress: req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress,
+                    userAgent: req.headers['user-agent'] || ''
+                };
 
-            await db.collection('bookings').doc(booking_id).set(bookingData, { merge: true });
-            console.log(`✅ Booking ${booking_id} stored in Firestore with 30-minute timeout`);
+                await db.collection('bookings').doc(booking_id).set(bookingData, { merge: true });
+                console.log(`✅ Booking ${booking_id} stored in Firestore with 30-minute timeout`);
 
-        } catch (firestoreError) {
-            console.error('🔴 Firestore save error:', firestoreError);
+            } catch (firestoreError) {
+                console.error('🔴 Firestore save error:', firestoreError);
+            }
+        } else {
+            console.warn('⚠️ Firebase not available, skipping Firestore save');
         }
 
         // Create redirect URL
@@ -315,7 +358,8 @@ app.post('/process-payment', async (req, res) => {
             success: true,
             redirectUrl: redirectUrl,
             bookingId: booking_id,
-            signature: signature
+            signature: signature,
+            notifyUrl: notifyUrl // Return for debugging
         });
 
     } catch (error) {
@@ -323,9 +367,215 @@ app.post('/process-payment', async (req, res) => {
         res.status(500).json({
             success: false,
             error: 'Payment processing failed',
-            message: error.message
+            message: error.message,
+            stack: error.stack
         });
     }
+});
+
+// ========== FIXED ITN HANDLER ==========
+app.post('/payfast-notify', async (req, res) => {
+    console.log('\n' + '='.repeat(50));
+    console.log('🟣🟣🟣 ITN RECEIVED AT:', new Date().toISOString());
+    console.log('='.repeat(50));
+
+    // IMPORTANT: Log everything about the request
+    console.log('📦 Request Headers:', req.headers);
+    console.log('📦 Request Method:', req.method);
+    console.log('📦 Request IP:', req.ip);
+    console.log('📦 Request Body Type:', typeof req.body);
+    console.log('📦 Raw Body:', req.body);
+
+    const data = req.body;
+
+    try {
+        console.log('📋 Parsed ITN Data:', JSON.stringify(data, null, 2));
+
+        if (!data || Object.keys(data).length === 0) {
+            console.error('❌ Empty ITN data received');
+            return res.status(400).send('Empty data');
+        }
+
+        // Verify signature
+        const isValidSignature = verifyPayFastSignature(data, PAYFAST_CONFIG.passphrase);
+
+        if (!isValidSignature) {
+            console.error('🔴 Invalid ITN signature - possible tampering');
+
+            // Log what we have for debugging
+            if (data.m_payment_id && db) {
+                try {
+                    await db.collection('bookings').doc(data.m_payment_id).update({
+                        paymentStatus: 'SIGNATURE_MISMATCH',
+                        lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+                        itnError: 'Invalid signature',
+                        itnData: data
+                    });
+                } catch (firestoreErr) {
+                    console.error('Could not update Firestore:', firestoreErr);
+                }
+            }
+
+            return res.status(400).send('INVALID SIGNATURE');
+        }
+
+        console.log('✅ ITN signature verified successfully');
+
+        // IMPORTANT: Verify with PayFast
+        const verifyUrl = PAYFAST_CONFIG.sandbox
+            ? 'https://sandbox.payfast.co.za/eng/query/validate'
+            : 'https://www.payfast.co.za/eng/query/validate';
+
+        console.log('🔍 Verifying with PayFast at:', verifyUrl);
+
+        const response = await axios.post(
+            verifyUrl,
+            querystring.stringify(data),
+            {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'User-Agent': 'Salwa-Collective-ITN/1.0'
+                },
+                timeout: 15000
+            }
+        );
+
+        console.log('🔍 PayFast verification response:', response.data);
+
+        if (response.data.trim() === 'VALID') {
+            const bookingId = data.m_payment_id;
+            const paymentStatus = data.payment_status?.toUpperCase() || '';
+
+            console.log(`🎉 🎉 🎉 VALID ITN for booking ${bookingId}, status: ${paymentStatus}`);
+
+            if (!db) {
+                console.error('❌ Firebase not available, cannot update booking');
+                return res.status(500).send('DATABASE_UNAVAILABLE');
+            }
+
+            const updateData = {
+                paymentStatus: paymentStatus,
+                payfastPaymentId: data.pf_payment_id,
+                amountPaid: parseFloat(data.amount_gross || 0),
+                fee: parseFloat(data.amount_fee || 0),
+                itnReceived: true,
+                itnTimestamp: admin.firestore.FieldValue.serverTimestamp(),
+                payerEmail: data.email_address,
+                payerPhone: data.cell_number || '',
+                payerName: `${data.name_first || ''} ${data.name_last || ''}`.trim(),
+                lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+                itnData: data,
+                itnValidated: true
+            };
+
+            if (paymentStatus === 'COMPLETE') {
+                updateData.status = 'confirmed';
+                updateData.paymentDate = admin.firestore.FieldValue.serverTimestamp();
+                updateData.isPaid = true;
+                console.log(`💰 Payment COMPLETE for booking ${bookingId}`);
+            } else if (paymentStatus === 'CANCELLED' || paymentStatus === 'USER_CANCELLED') {
+                updateData.status = 'cancelled';
+                updateData.isPaid = false;
+                updateData.cancellationReason = 'user_cancelled_on_payfast';
+                updateData.cancelledAt = admin.firestore.FieldValue.serverTimestamp();
+                console.log(`❌ Payment CANCELLED for booking ${bookingId}`);
+            } else if (paymentStatus === 'FAILED') {
+                updateData.status = 'failed';
+                updateData.isPaid = false;
+                updateData.cancellationReason = 'payment_failed';
+                updateData.cancelledAt = admin.firestore.FieldValue.serverTimestamp();
+                console.log(`⚠️ Payment FAILED for booking ${bookingId}`);
+            } else {
+                updateData.status = paymentStatus.toLowerCase();
+                updateData.isPaid = false;
+                console.log(`ℹ️ Payment status ${paymentStatus} for booking ${bookingId}`);
+            }
+
+            // Update Firestore
+            try {
+                await db.collection('bookings').doc(bookingId).update(updateData);
+                console.log(`✅✅✅ Booking ${bookingId} updated in Firebase with status: ${paymentStatus}`);
+
+                // Also log to a separate ITN log collection for debugging
+                await db.collection('itn_logs').add({
+                    bookingId: bookingId,
+                    paymentStatus: paymentStatus,
+                    pfPaymentId: data.pf_payment_id,
+                    amount: data.amount_gross,
+                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                    data: data
+                });
+
+            } catch (firestoreError) {
+                console.error('🔴 Firestore update error:', firestoreError);
+                // Log the error but still respond OK to PayFast
+                await db.collection('itn_errors').add({
+                    bookingId: bookingId,
+                    error: firestoreError.message,
+                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                    data: data
+                });
+            }
+
+            res.status(200).send('OK');
+
+        } else {
+            console.error('🔴 Invalid ITN response from PayFast:', response.data);
+
+            if (data.m_payment_id && db) {
+                try {
+                    await db.collection('bookings').doc(data.m_payment_id).update({
+                        paymentStatus: 'ITN_VALIDATION_FAILED',
+                        lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+                        itnError: 'PayFast validation failed: ' + response.data
+                    });
+                } catch (firestoreErr) {
+                    console.error('Could not update Firestore:', firestoreErr);
+                }
+            }
+
+            res.status(400).send('INVALID ITN');
+        }
+
+    } catch (err) {
+        console.error('🔴🔴🔴 ITN processing error:', err.message);
+        console.error('Stack:', err.stack);
+
+        // Log the error
+        if (data && data.m_payment_id && db) {
+            try {
+                await db.collection('bookings').doc(data.m_payment_id).update({
+                    paymentStatus: 'ITN_ERROR',
+                    lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+                    itnError: err.message
+                });
+
+                await db.collection('itn_errors').add({
+                    bookingId: data.m_payment_id,
+                    error: err.message,
+                    stack: err.stack,
+                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                    data: data
+                });
+            } catch (firestoreErr) {
+                console.error('Could not log ITN error:', firestoreErr);
+            }
+        }
+
+        // Still respond with 200 to prevent PayFast from retrying
+        res.status(200).send('OK - Error logged');
+    }
+});
+
+// ========== TEST ITN ENDPOINT ==========
+app.post('/test-itn', async (req, res) => {
+    console.log('🧪 Test ITN endpoint hit');
+    res.json({
+        success: true,
+        message: 'ITN endpoint is accessible',
+        timestamp: new Date().toISOString(),
+        url: getNotifyUrl()
+    });
 });
 
 // ========== MANUAL TEST ENDPOINT ==========
@@ -334,13 +584,14 @@ app.get('/manual-test', (req, res) => {
     const testBookingId = 'test-' + Date.now();
     const returnUrl = `https://salwacollective.co.za/payment-result.html?pf_status=success&booking_id=${testBookingId}`;
     const cancelUrl = `https://salwacollective.co.za/payment-result.html?pf_status=cancelled&booking_id=${testBookingId}`;
+    const notifyUrl = getNotifyUrl();
 
     const testData = {
         merchant_id: PAYFAST_CONFIG.merchantId,
         merchant_key: PAYFAST_CONFIG.merchantKey,
         return_url: returnUrl,
         cancel_url: cancelUrl,
-        notify_url: 'https://payfast-itn.onrender.com',
+        notify_url: notifyUrl,
         name_first: 'Test',
         name_last: 'User',
         email_address: 'test@example.com',
@@ -366,16 +617,24 @@ app.get('/manual-test', (req, res) => {
                 .url-box { background: white; padding: 15px; border: 1px solid #ddd; border-radius: 5px; word-break: break-all; }
                 .btn { background: #4CAF50; color: white; padding: 12px 24px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }
                 .test-card { background: #e8f5e9; padding: 15px; border-radius: 5px; margin-top: 20px; }
+                .info-box { background: #e3f2fd; padding: 15px; border-radius: 5px; margin-top: 20px; }
             </style>
         </head>
         <body>
             <div class="container">
                 <h1>🧪 PayFast Sandbox Test</h1>
-                <p><strong>Status:</strong> Using merchant ID: ${PAYFAST_CONFIG.merchantId}</p>
-                <p><strong>Passphrase:</strong> ${PAYFAST_CONFIG.passphrase ? 'SET' : 'NOT SET'}</p>
-                <p><strong>Signature:</strong> ${signature.substring(0, 20)}...</p>
                 
-                <h3>Test Payment Link:</h3>
+                <div class="info-box">
+                    <h3>🔧 Configuration:</h3>
+                    <p><strong>Merchant ID:</strong> ${PAYFAST_CONFIG.merchantId}</p>
+                    <p><strong>Merchant Key:</strong> ${PAYFAST_CONFIG.merchantKey.substring(0, 4)}...</p>
+                    <p><strong>Passphrase:</strong> ${PAYFAST_CONFIG.passphrase ? 'SET (' + PAYFAST_CONFIG.passphrase.substring(0, 4) + '...)' : 'NOT SET'}</p>
+                    <p><strong>Sandbox Mode:</strong> ${PAYFAST_CONFIG.sandbox ? 'YES 🧪' : 'NO 🏢'}</p>
+                    <p><strong>Notify URL:</strong> <br><small>${notifyUrl}</small></p>
+                    <p><strong>Firebase:</strong> ${db ? '✅ CONNECTED' : '❌ DISCONNECTED'}</p>
+                </div>
+                
+                <h3>🔗 Test Payment Link:</h3>
                 <div class="url-box">${testUrl}</div>
                 
                 <p style="margin-top: 20px;">
@@ -394,115 +653,26 @@ app.get('/manual-test', (req, res) => {
                 </div>
                 
                 <div style="margin-top: 30px; padding: 15px; background: #fff3cd; border-radius: 5px;">
-                    <h3>⚠️ Troubleshooting</h3>
-                    <p>If you get "signature mismatch":</p>
+                    <h3>⚠️ ITN Debugging</h3>
+                    <p>To test if PayFast can reach your ITN endpoint:</p>
                     <ol>
-                        <li>Check your PayFast merchant dashboard passphrase setting</li>
-                        <li>Verify merchant ID and key in Render environment variables</li>
-                        <li>Try clearing browser cache and cookies</li>
+                        <li>Click the payment link above</li>
+                        <li>Complete the payment with test card details</li>
+                        <li>Check Render logs for "🟣 ITN RECEIVED" message</li>
+                        <li>If no ITN is received, check:
+                            <ul>
+                                <li>Firewall settings on Render</li>
+                                <li>PayFast merchant settings for notify_url</li>
+                                <li>Network tab in Render dashboard</li>
+                            </ul>
+                        </li>
                     </ol>
+                    <p><a href="/test-itn" target="_blank">Test ITN endpoint manually</a></p>
                 </div>
             </div>
         </body>
         </html>
     `);
-});
-
-// ========== ITN HANDLER ==========
-app.post('/payfast-notify', async (req, res) => {
-    const data = req.body;
-
-    try {
-        console.log('🟣 ITN received:', JSON.stringify(data, null, 2));
-
-        const isValidSignature = verifyPayFastSignature(data, PAYFAST_CONFIG.passphrase);
-
-        if (!isValidSignature) {
-            console.error('🔴 Invalid ITN signature');
-            return res.status(400).send('Invalid signature');
-        }
-
-        const verifyUrl = PAYFAST_CONFIG.sandbox
-            ? 'https://sandbox.payfast.co.za/eng/query/validate'
-            : 'https://www.payfast.co.za/eng/query/validate';
-
-        const response = await axios.post(
-            verifyUrl,
-            querystring.stringify(data),
-            {
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'User-Agent': 'Salwa-Collective-ITN/1.0'
-                },
-                timeout: 10000
-            }
-        );
-
-        if (response.data.trim() === 'VALID') {
-            const bookingId = data.m_payment_id;
-            const paymentStatus = data.payment_status?.toUpperCase() || '';
-
-            console.log(`🟢 Valid ITN for booking ${bookingId}, status: ${paymentStatus}`);
-
-            const updateData = {
-                paymentStatus: paymentStatus,
-                payfastPaymentId: data.pf_payment_id,
-                amountPaid: parseFloat(data.amount_gross),
-                fee: parseFloat(data.amount_fee || 0),
-                itnReceived: true,
-                itnTimestamp: admin.firestore.FieldValue.serverTimestamp(),
-                payerEmail: data.email_address,
-                payerPhone: data.cell_number || '',
-                payerName: `${data.name_first || ''} ${data.name_last || ''}`.trim(),
-                lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
-                itnData: data
-            };
-
-            if (paymentStatus === 'COMPLETE') {
-                updateData.status = 'confirmed';
-                updateData.paymentDate = admin.firestore.FieldValue.serverTimestamp();
-                updateData.isPaid = true;
-            } else if (paymentStatus === 'CANCELLED' || paymentStatus === 'USER_CANCELLED') {
-                updateData.status = 'cancelled';
-                updateData.isPaid = false;
-                updateData.cancellationReason = 'user_cancelled_on_payfast';
-                updateData.cancelledAt = admin.firestore.FieldValue.serverTimestamp();
-            } else if (paymentStatus === 'FAILED') {
-                updateData.status = 'failed';
-                updateData.isPaid = false;
-                updateData.cancellationReason = 'payment_failed';
-                updateData.cancelledAt = admin.firestore.FieldValue.serverTimestamp();
-            } else {
-                updateData.status = paymentStatus.toLowerCase();
-                updateData.isPaid = false;
-            }
-
-            await db.collection('bookings').doc(bookingId).update(updateData);
-            console.log(`✅ Booking ${bookingId} updated in Firebase`);
-
-        } else {
-            console.error('🔴 Invalid ITN response from PayFast:', response.data);
-        }
-
-        res.status(200).send('OK');
-
-    } catch (err) {
-        console.error('🔴 ITN processing error:', err);
-
-        if (data && data.m_payment_id) {
-            try {
-                await db.collection('bookings').doc(data.m_payment_id).update({
-                    paymentStatus: 'itn_error',
-                    lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
-                    itnError: err.message
-                });
-            } catch (firestoreErr) {
-                console.error('Could not update Firestore:', firestoreErr);
-            }
-        }
-
-        res.status(500).send('Server error');
-    }
 });
 
 // ========== CHECK PAYMENT STATUS ==========
@@ -514,6 +684,13 @@ app.post('/check-payment-status', async (req, res) => {
             return res.status(400).json({
                 success: false,
                 error: 'Booking ID required'
+            });
+        }
+
+        if (!db) {
+            return res.status(500).json({
+                success: false,
+                error: 'Database unavailable'
             });
         }
 
@@ -592,121 +769,6 @@ app.post('/check-payment-status', async (req, res) => {
     }
 });
 
-// ========== DIRECT CANCELLATION ENDPOINT ==========
-app.post('/direct-cancel', async (req, res) => {
-    try {
-        const { bookingId, reason = 'user_cancelled' } = req.body;
-
-        console.log(`❌ Direct cancellation for booking: ${bookingId}`);
-
-        if (!bookingId) {
-            return res.status(400).json({ success: false, error: 'Booking ID required' });
-        }
-
-        const updateData = {
-            paymentStatus: 'CANCELLED',
-            status: 'cancelled',
-            isPaid: false,
-            cancellationReason: reason,
-            cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
-            lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
-            itnReceived: false,
-            directCancel: true
-        };
-
-        await db.collection('bookings').doc(bookingId).update(updateData);
-
-        console.log(`✅ Booking ${bookingId} marked as cancelled`);
-
-        res.json({
-            success: true,
-            message: 'Booking cancelled',
-            bookingId: bookingId
-        });
-
-    } catch (error) {
-        console.error('🔴 Direct cancellation error:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Cancellation failed'
-        });
-    }
-});
-
-// ========== CLEANUP STALE PAYMENTS ==========
-app.post('/cleanup-stale-payments', async (req, res) => {
-    try {
-        const hoursAgo = 24;
-        const cutoffTime = new Date(Date.now() - hoursAgo * 60 * 60 * 1000);
-
-        console.log(`🕒 Cleaning up payments older than ${hoursAgo} hours...`);
-
-        const bookingsRef = db.collection('bookings');
-        const query = bookingsRef
-            .where('status', 'in', ['pending', 'pending_payment'])
-            .where('createdAt', '<', cutoffTime);
-
-        const snapshot = await query.get();
-
-        let cancelledCount = 0;
-        const batch = db.batch();
-
-        snapshot.forEach(doc => {
-            const updateData = {
-                status: 'cancelled',
-                paymentStatus: 'TIMEOUT_CANCELLED',
-                isPaid: false,
-                cancellationReason: 'stale_payment_cleanup',
-                cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
-                lastUpdated: admin.firestore.FieldValue.serverTimestamp()
-            };
-
-            batch.update(doc.ref, updateData);
-            cancelledCount++;
-        });
-
-        await batch.commit();
-
-        console.log(`✅ Cancelled ${cancelledCount} stale payments`);
-
-        res.json({
-            success: true,
-            cancelledCount: cancelledCount,
-            message: `Cancelled ${cancelledCount} stale payments`
-        });
-
-    } catch (error) {
-        console.error('🔴 Cleanup error:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Cleanup failed'
-        });
-    }
-});
-
-// ========== TEST CANCELLATION ENDPOINT ==========
-app.post('/test-cancel/:bookingId', async (req, res) => {
-    const bookingId = req.params.bookingId;
-
-    const updateData = {
-        paymentStatus: 'CANCELLED',
-        status: 'cancelled',
-        isPaid: false,
-        cancellationReason: 'test_cancellation',
-        cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
-        lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
-        testMode: true
-    };
-
-    await db.collection('bookings').doc(bookingId).update(updateData);
-
-    res.json({
-        success: true,
-        message: `Booking ${bookingId} cancelled for testing`,
-        bookingId: bookingId
-    });
-});
-
 // ========== HEALTH CHECK ==========
 app.get('/health', (req, res) => {
     const firebaseConfig = JSON.parse(process.env.FIREBASE_KEY || '{}');
@@ -719,10 +781,8 @@ app.get('/health', (req, res) => {
         endpoints: {
             processPayment: 'POST /process-payment',
             itnHandler: 'POST /payfast-notify',
+            testItn: 'POST /test-itn',
             checkStatus: 'POST /check-payment-status',
-            directCancel: 'POST /direct-cancel',
-            cleanup: 'POST /cleanup-stale-payments',
-            testCancel: 'POST /test-cancel/:bookingId',
             manualTest: 'GET /manual-test',
             health: 'GET /health'
         },
@@ -731,7 +791,8 @@ app.get('/health', (req, res) => {
             merchantKey: PAYFAST_CONFIG.merchantKey ? PAYFAST_CONFIG.merchantKey.substring(0, 4) + '...' : 'MISSING',
             passphrase: PAYFAST_CONFIG.passphrase ? 'SET (' + PAYFAST_CONFIG.passphrase.substring(0, 4) + '...)' : 'MISSING',
             sandbox: PAYFAST_CONFIG.sandbox,
-            firebase: firebaseConfig.project_id ? 'CONNECTED' : 'DISCONNECTED'
+            firebase: firebaseConfig.project_id ? 'CONNECTED' : 'DISCONNECTED',
+            notifyUrl: getNotifyUrl()
         },
         warning: isDemoAccount ?
             '⚠️ USING PAYFAST DEMO ACCOUNT! Update with YOUR merchant ID' :
@@ -746,23 +807,32 @@ app.listen(PORT, () => {
     🚀 Salwa Payment Server Started!
     📍 Port: ${PORT}
     🔒 Mode: ${PAYFAST_CONFIG.sandbox ? 'SANDBOX 🧪' : 'PRODUCTION 🏢'}
-    🌐 URL: https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost:' + PORT}
+    🌐 External URL: ${process.env.RENDER_EXTERNAL_URL || 'Not set'}
+    🌐 Hostname: ${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost:' + PORT}
     
     📋 Endpoints:
     ├── POST /process-payment    - Create payment links
-    ├── POST /payfast-notify     - Receive ITN notifications
+    ├── POST /payfast-notify     - Receive ITN notifications (CRITICAL)
+    ├── POST /test-itn           - Test ITN endpoint
     ├── POST /check-payment-status - Check booking status
-    ├── POST /direct-cancel      - Manual cancellation
-    ├── POST /cleanup-stale-payments - Cleanup old payments
-    ├── POST /test-cancel/:id    - Test cancellation
     ├── GET  /manual-test        - Manual PayFast test page
     └── GET  /health             - Server health check
     
-    ⚠️  Make sure these env vars are set in Render:
-    ├── FIREBASE_KEY
-    ├── PAYFAST_MERCHANT_ID=10044213
-    ├── PAYFAST_MERCHANT_KEY=9s7vajpkdyycf
-    ├── PAYFAST_PASSPHRASE=salwa20242024
-    └── PAYFAST_SANDBOX=true
+    🔗 ITN Notify URL: ${getNotifyUrl()}
+    
+    ⚠️  IMPORTANT: Make sure these env vars are set in Render:
+    ├── FIREBASE_KEY             - Your Firebase service account key
+    ├── PAYFAST_MERCHANT_ID      - Your PayFast merchant ID
+    ├── PAYFAST_MERCHANT_KEY     - Your PayFast merchant key
+    ├── PAYFAST_PASSPHRASE       - Your PayFast passphrase
+    ├── PAYFAST_SANDBOX=true     - Set to false for production
+    ├── RENDER_EXTERNAL_URL      - Should be auto-set by Render
+    └── RENDER_EXTERNAL_HOSTNAME - Should be auto-set by Render
+    
+    🐛 Debug ITN Issues:
+    1. Visit /manual-test to create a test payment
+    2. Complete the payment in sandbox
+    3. Check Render logs for "🟣 ITN RECEIVED"
+    4. If no ITN, check if PayFast can reach ${getNotifyUrl()}
     `);
 });
