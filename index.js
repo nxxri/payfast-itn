@@ -8,33 +8,15 @@ const cors = require('cors');
 
 const app = express();
 
-// ===== CORS CONFIGURATION =====
-const allowedOrigins = [
-    'https://salwacollective.co.za',
-    'http://localhost:3000',
-    'http://localhost:5500',
-    'http://127.0.0.1:5500'
-];
-
-const corsOptions = {
-    origin: function (origin, callback) {
-        // Allow requests with no origin (like mobile apps or curl requests)
-        if (!origin || allowedOrigins.includes(origin)) {
-            callback(null, true);
-        } else {
-            callback(new Error('Not allowed by CORS'));
-        }
-    },
-    credentials: true,
+// ===== MIDDLEWARE SETUP =====
+app.use(cors({
+    origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
-    exposedHeaders: ['Content-Range', 'X-Content-Range']
-};
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
+}));
 
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
+app.options('*', cors());
 
-// ===== MIDDLEWARE =====
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
@@ -68,9 +50,9 @@ try {
 
 // ===== PAYFAST CONFIGURATION =====
 const PAYFAST_CONFIG = {
-    merchantId: process.env.PAYFAST_MERCHANT_ID || '32449257',
-    merchantKey: process.env.PAYFAST_MERCHANT_KEY || '4wkknlvwwll3x',
-    passphrase: process.env.PAYFAST_PASSPHRASE || 'salwa20242024',
+    merchantId: process.env.PAYFAST_MERCHANT_ID || '10000100',
+    merchantKey: process.env.PAYFAST_MERCHANT_KEY || '46f0cd694581a',
+    passphrase: process.env.PAYFAST_PASSPHRASE || '',
     sandbox: process.env.PAYFAST_SANDBOX !== 'false',
 
     productionUrl: "https://www.payfast.co.za/eng/process",
@@ -161,17 +143,25 @@ function getNotifyUrl() {
 
 // 1. ROOT ENDPOINT
 app.get('/', (req, res) => {
-    res.json({
-        service: 'Salwa Collective Payment API',
-        status: 'online',
-        endpoints: {
-            processPayment: 'POST /process-payment',
-            checkPaymentStatus: 'POST /check-payment-status',
-            payfastNotify: 'POST /payfast-notify',
-            health: 'GET /health',
-            test: 'GET /test'
-        }
-    });
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Salwa Collective Payment Server</title>
+            <style>
+                body { font-family: Arial, sans-serif; padding: 20px; }
+                .endpoint { background: #f5f5f5; padding: 10px; margin: 5px 0; }
+                .btn { background: #4CAF50; color: white; padding: 10px; margin: 5px; text-decoration: none; display: inline-block; }
+            </style>
+        </head>
+        <body>
+            <h1>🎫 Salwa Collective Payment Server</h1>
+            <p><a class="btn" href="/test">Test Dashboard</a></p>
+            <p><a class="btn" href="/health">Health Check</a></p>
+            <p><a class="btn" href="/itn-test">Test ITN</a></p>
+        </body>
+        </html>
+    `);
 });
 
 // 2. HEALTH CHECK
@@ -180,9 +170,7 @@ app.get('/health', (req, res) => {
         status: 'online',
         timestamp: new Date().toISOString(),
         mode: PAYFAST_CONFIG.sandbox ? 'sandbox' : 'production',
-        firebase: db ? 'connected' : 'disconnected',
-        cors: 'enabled',
-        origins: allowedOrigins
+        firebase: db ? 'connected' : 'disconnected'
     });
 });
 
@@ -227,6 +215,14 @@ app.get('/test', (req, res) => {
                 async function simulateITN() {
                     const bookingId = 'simulate-' + Date.now();
                     try {
+                        // First create the booking in Firestore
+                        await fetch('/create-test-booking', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ bookingId: bookingId })
+                        });
+                        
+                        // Then simulate ITN
                         const res = await fetch('/simulate-itn', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
@@ -247,9 +243,7 @@ app.get('/test', (req, res) => {
                     try {
                         const res = await fetch('/process-payment', {
                             method: 'POST',
-                            headers: { 
-                                'Content-Type': 'application/json'
-                            },
+                            headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 amount: '5.00',
                                 item_name: 'Test Event',
@@ -278,7 +272,35 @@ app.get('/test', (req, res) => {
     `);
 });
 
-// 4. ITN TEST ENDPOINT
+// 4. CREATE TEST BOOKING (NEW ENDPOINT)
+app.post('/create-test-booking', async (req, res) => {
+    try {
+        const { bookingId } = req.body;
+
+        if (!db) {
+            return res.json({ success: false, error: 'Firebase not connected' });
+        }
+
+        const bookingData = {
+            bookingId: bookingId,
+            status: 'pending',
+            amount: '5.00',
+            email: 'test@example.com',
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            itnReceived: false
+        };
+
+        await db.collection('bookings').doc(bookingId).set(bookingData);
+
+        res.json({ success: true, message: 'Test booking created', bookingId: bookingId });
+
+    } catch (error) {
+        console.error('Create test booking error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// 5. ITN TEST ENDPOINT
 app.get('/itn-test', (req, res) => {
     res.json({
         success: true,
@@ -288,10 +310,17 @@ app.get('/itn-test', (req, res) => {
     });
 });
 
-// 5. SIMULATE ITN
+// 6. SIMULATE ITN
 app.post('/simulate-itn', async (req, res) => {
     try {
         const bookingId = req.body.bookingId || 'simulate-' + Date.now();
+
+        // Check if booking exists in Firestore
+        let bookingExists = false;
+        if (db) {
+            const doc = await db.collection('bookings').doc(bookingId).get();
+            bookingExists = doc.exists;
+        }
 
         // Create test ITN data
         const testData = {
@@ -309,8 +338,13 @@ app.post('/simulate-itn', async (req, res) => {
             merchant_id: PAYFAST_CONFIG.merchantId
         };
 
+        // Generate signature
         testData.signature = generatePayFastSignature(testData, PAYFAST_CONFIG.passphrase);
 
+        console.log('🧪 Simulating ITN for booking:', bookingId);
+        console.log('Booking exists in Firestore:', bookingExists);
+
+        // Call ITN endpoint
         const response = await axios.post(
             getNotifyUrl(),
             querystring.stringify(testData),
@@ -325,6 +359,7 @@ app.post('/simulate-itn', async (req, res) => {
             success: true,
             message: 'ITN simulation completed',
             bookingId: bookingId,
+            bookingExists: bookingExists,
             response: response.data
         });
 
@@ -332,41 +367,29 @@ app.post('/simulate-itn', async (req, res) => {
         console.error('Simulate ITN error:', error);
         res.status(500).json({
             success: false,
-            error: error.message
+            error: error.message,
+            response: error.response?.data
         });
     }
 });
 
-// 6. PROCESS PAYMENT - WITH CORRECT ENDPOINT NAME
+// 7. PROCESS PAYMENT
 app.post('/process-payment', async (req, res) => {
     try {
         console.log('Processing payment request:', req.body);
 
-        const {
-            amount,
-            item_name,
-            email_address,
-            booking_id,
-            name_first,
-            name_last,
-            cell_number,
-            event_id,
-            ticket_number,
-            ticket_quantity,
-            event_name,
-            event_date
-        } = req.body;
+        const { amount, item_name, email_address, booking_id, name_first, name_last } = req.body;
 
         if (!amount || !email_address || !booking_id) {
             return res.status(400).json({
                 success: false,
-                error: 'Missing required fields: amount, email_address, booking_id'
+                error: 'Missing required fields'
             });
         }
 
         const payfastUrl = PAYFAST_CONFIG.sandbox ? PAYFAST_CONFIG.sandboxUrl : PAYFAST_CONFIG.productionUrl;
-        const returnUrl = `https://salwacollective.co.za/payment-result.html?status=success&booking_id=${booking_id}`;
-        const cancelUrl = `https://salwacollective.co.za/payment-result.html?status=cancelled&booking_id=${booking_id}`;
+        const returnUrl = `https://salwacollective.co.za/payment-result.html?booking_id=${booking_id}`;
+        const cancelUrl = `https://salwacollective.co.za/payment-result.html?booking_id=${booking_id}&cancelled=true`;
         const notifyUrl = getNotifyUrl();
 
         const paymentData = {
@@ -378,15 +401,10 @@ app.post('/process-payment', async (req, res) => {
             name_first: name_first || '',
             name_last: name_last || '',
             email_address: email_address,
-            cell_number: cell_number || '',
             amount: parseFloat(amount).toFixed(2),
             item_name: item_name || 'Event Ticket',
             m_payment_id: booking_id
         };
-
-        if (event_id) paymentData.custom_str1 = event_id;
-        if (ticket_number) paymentData.custom_str2 = ticket_number;
-        if (ticket_quantity) paymentData.custom_int1 = parseInt(ticket_quantity);
 
         const signature = generatePayFastSignature(paymentData, PAYFAST_CONFIG.passphrase);
         paymentData.signature = signature;
@@ -402,17 +420,10 @@ app.post('/process-payment', async (req, res) => {
                 customerEmail: email_address,
                 customerFirstName: name_first || '',
                 customerLastName: name_last || '',
-                customerPhone: cell_number || '',
-                eventId: event_id || '',
-                ticketNumber: ticket_number || '',
-                ticketQuantity: parseInt(ticket_quantity) || 1,
-                eventName: event_name || '',
-                eventDate: event_date || '',
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
                 lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
                 paymentTimeout: new Date(Date.now() + 30 * 60 * 1000),
-                itnReceived: false,
-                paymentMethod: 'payfast'
+                itnReceived: false
             };
 
             await db.collection('bookings').doc(booking_id).set(bookingData);
@@ -424,8 +435,7 @@ app.post('/process-payment', async (req, res) => {
         res.json({
             success: true,
             redirectUrl: redirectUrl,
-            bookingId: booking_id,
-            signature: signature
+            bookingId: booking_id
         });
 
     } catch (error) {
@@ -438,103 +448,7 @@ app.post('/process-payment', async (req, res) => {
     }
 });
 
-// 7. CHECK PAYMENT STATUS - FIXED ENDPOINT NAME
-app.post('/check-payment-status', async (req, res) => {
-    try {
-        const { bookingId } = req.body;
-
-        if (!bookingId) {
-            return res.status(400).json({
-                success: false,
-                error: 'Booking ID is required'
-            });
-        }
-
-        console.log(`🔍 Checking status for booking: ${bookingId}`);
-
-        if (!db) {
-            return res.json({
-                success: false,
-                error: 'Database unavailable',
-                bookingId: bookingId,
-                status: 'unknown'
-            });
-        }
-
-        const doc = await db.collection('bookings').doc(bookingId).get();
-
-        if (!doc.exists) {
-            return res.status(404).json({
-                success: false,
-                error: 'Booking not found',
-                bookingId: bookingId
-            });
-        }
-
-        const bookingData = doc.data();
-
-        // Check for timeout (30 minutes)
-        if (bookingData.paymentTimeout) {
-            const timeoutDate = bookingData.paymentTimeout.toDate ?
-                bookingData.paymentTimeout.toDate() :
-                new Date(bookingData.paymentTimeout);
-            const now = new Date();
-
-            if (timeoutDate < now &&
-                (bookingData.status === 'pending' || bookingData.status === 'pending_payment') &&
-                !bookingData.isPaid) {
-
-                console.log(`⏰ Auto-cancelling timed out booking: ${bookingId}`);
-
-                const updateData = {
-                    status: 'cancelled',
-                    paymentStatus: 'TIMEOUT',
-                    isPaid: false,
-                    cancellationReason: 'payment_timeout',
-                    cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
-                    lastUpdated: admin.firestore.FieldValue.serverTimestamp()
-                };
-
-                await db.collection('bookings').doc(bookingId).update(updateData);
-                bookingData.status = 'cancelled';
-                bookingData.paymentStatus = 'TIMEOUT';
-                bookingData.isPaid = false;
-                bookingData.autoCancelled = true;
-            }
-        }
-
-        res.json({
-            success: true,
-            bookingId: bookingId,
-            status: bookingData.status || 'pending',
-            paymentStatus: bookingData.paymentStatus || 'pending',
-            isPaid: bookingData.isPaid || false,
-            itnReceived: bookingData.itnReceived || false,
-            amount: bookingData.totalAmount || bookingData.amountPaid || 0,
-            email: bookingData.customerEmail || '',
-            eventName: bookingData.eventName || bookingData.itemName || '',
-            eventDate: bookingData.eventDate || '',
-            ticketNumber: bookingData.ticketNumber || '',
-            customerName: `${bookingData.customerFirstName || ''} ${bookingData.customerLastName || ''}`.trim(),
-            createdAt: bookingData.createdAt ?
-                (bookingData.createdAt.toDate ? bookingData.createdAt.toDate().toISOString() : bookingData.createdAt) :
-                null,
-            lastUpdated: bookingData.lastUpdated ?
-                (bookingData.lastUpdated.toDate ? bookingData.lastUpdated.toDate().toISOString() : bookingData.lastUpdated) :
-                null
-        });
-
-    } catch (error) {
-        console.error('Check status error:', error);
-        res.status(500).json({
-            success: false,
-            error: error.message,
-            bookingId: req.body.bookingId
-        });
-    }
-});
-
-// 8. PAYFAST ITN ENDPOINT
+// 8. PAYFAST ITN ENDPOINT - FIXED VERSION
 app.post('/payfast-notify', async (req, res) => {
     console.log('\n' + '='.repeat(70));
     console.log('🟣 PAYFAST ITN RECEIVED');
@@ -544,11 +458,12 @@ app.post('/payfast-notify', async (req, res) => {
     console.log('ITN Data:', JSON.stringify(data, null, 2));
 
     try {
+        // Verify signature
         const isValidSignature = verifyPayFastSignature(data, PAYFAST_CONFIG.passphrase);
 
         if (!isValidSignature) {
             console.error('❌ Invalid signature');
-            return res.status(200).send('OK');
+            return res.status(200).send('OK'); // Always respond OK to PayFast
         }
 
         const bookingId = data.m_payment_id;
@@ -561,59 +476,70 @@ app.post('/payfast-notify', async (req, res) => {
             return res.status(200).send('OK');
         }
 
+        // Check if booking exists
         const bookingDoc = await db.collection('bookings').doc(bookingId).get();
 
-        const updateData = {
-            paymentStatus: paymentStatus,
-            payfastPaymentId: data.pf_payment_id || '',
-            amountPaid: parseFloat(data.amount_gross || 0),
-            itnReceived: true,
-            lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
-            itnData: data
-        };
+        if (!bookingDoc.exists) {
+            console.log(`⚠️ Booking ${bookingId} not found in Firestore, creating it...`);
 
-        if (paymentStatus === 'COMPLETE') {
-            updateData.status = 'confirmed';
-            updateData.isPaid = true;
-            updateData.paymentDate = admin.firestore.FieldValue.serverTimestamp();
-        } else if (paymentStatus === 'CANCELLED' || paymentStatus === 'USER_CANCELLED') {
-            updateData.status = 'cancelled';
-            updateData.isPaid = false;
-            updateData.cancellationReason = 'user_cancelled';
-            updateData.cancelledAt = admin.firestore.FieldValue.serverTimestamp();
-        } else if (paymentStatus === 'FAILED') {
-            updateData.status = 'failed';
-            updateData.isPaid = false;
-            updateData.cancellationReason = 'payment_failed';
-            updateData.cancelledAt = admin.firestore.FieldValue.serverTimestamp();
-        } else {
-            updateData.status = paymentStatus.toLowerCase();
-            updateData.isPaid = false;
-        }
-
-        if (bookingDoc.exists) {
-            await db.collection('bookings').doc(bookingId).update(updateData);
-            console.log(`✅ Updated booking ${bookingId} in Firestore`);
-        } else {
-            // Create new booking if it doesn't exist
+            // Create the booking if it doesn't exist
             const newBookingData = {
                 bookingId: bookingId,
-                ...updateData,
+                status: paymentStatus === 'COMPLETE' ? 'confirmed' : paymentStatus.toLowerCase(),
+                paymentStatus: paymentStatus,
+                totalAmount: parseFloat(data.amount_gross || 0),
+                itemName: data.item_name || '',
                 customerEmail: data.email_address || '',
                 customerFirstName: data.name_first || '',
                 customerLastName: data.name_last || '',
-                customerPhone: data.cell_number || '',
-                itemName: data.item_name || '',
-                totalAmount: parseFloat(data.amount_gross || 0),
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                paymentMethod: 'payfast'
+                lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+                itnReceived: true,
+                payfastPaymentId: data.pf_payment_id || '',
+                amountPaid: parseFloat(data.amount_gross || 0),
+                isPaid: paymentStatus === 'COMPLETE',
+                paymentDate: paymentStatus === 'COMPLETE' ? admin.firestore.FieldValue.serverTimestamp() : null,
+                itnData: data
             };
 
             await db.collection('bookings').doc(bookingId).set(newBookingData);
             console.log(`✅ Created new booking ${bookingId} from ITN`);
+
+        } else {
+            // Update existing booking
+            const updateData = {
+                paymentStatus: paymentStatus,
+                payfastPaymentId: data.pf_payment_id || '',
+                amountPaid: parseFloat(data.amount_gross || 0),
+                itnReceived: true,
+                lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+                itnData: data
+            };
+
+            if (paymentStatus === 'COMPLETE') {
+                updateData.status = 'confirmed';
+                updateData.isPaid = true;
+                updateData.paymentDate = admin.firestore.FieldValue.serverTimestamp();
+            } else if (paymentStatus === 'CANCELLED' || paymentStatus === 'USER_CANCELLED') {
+                updateData.status = 'cancelled';
+                updateData.isPaid = false;
+                updateData.cancellationReason = 'user_cancelled';
+                updateData.cancelledAt = admin.firestore.FieldValue.serverTimestamp();
+            } else if (paymentStatus === 'FAILED') {
+                updateData.status = 'failed';
+                updateData.isPaid = false;
+                updateData.cancellationReason = 'payment_failed';
+                updateData.cancelledAt = admin.firestore.FieldValue.serverTimestamp();
+            } else {
+                updateData.status = paymentStatus.toLowerCase();
+                updateData.isPaid = false;
+            }
+
+            await db.collection('bookings').doc(bookingId).update(updateData);
+            console.log(`✅ Updated booking ${bookingId} in Firestore`);
         }
 
-        // Log ITN
+        // Log ITN success
         await db.collection('itn_logs').add({
             bookingId: bookingId,
             paymentStatus: paymentStatus,
@@ -627,6 +553,7 @@ app.post('/payfast-notify', async (req, res) => {
     } catch (error) {
         console.error('🔴 ITN Processing Error:', error);
 
+        // Log error
         if (db) {
             try {
                 await db.collection('itn_errors').add({
@@ -639,57 +566,74 @@ app.post('/payfast-notify', async (req, res) => {
             }
         }
 
+        // Always respond OK to prevent PayFast retries
         res.status(200).send('OK');
     }
 });
 
-// 9. 404 HANDLER
+// 9. CHECK STATUS
+app.post('/check-status', async (req, res) => {
+    try {
+        const { bookingId } = req.body;
+
+        if (!bookingId) {
+            return res.status(400).json({ error: 'Booking ID required' });
+        }
+
+        if (!db) {
+            return res.json({ status: 'database_unavailable', bookingId: bookingId });
+        }
+
+        const doc = await db.collection('bookings').doc(bookingId).get();
+
+        if (!doc.exists) {
+            return res.json({ status: 'not_found', bookingId: bookingId });
+        }
+
+        const data = doc.data();
+
+        res.json({
+            success: true,
+            bookingId: bookingId,
+            status: data.status || 'pending',
+            paymentStatus: data.paymentStatus || 'pending',
+            isPaid: data.isPaid || false,
+            itnReceived: data.itnReceived || false,
+            amount: data.totalAmount || data.amountPaid || 0,
+            email: data.customerEmail || ''
+        });
+
+    } catch (error) {
+        console.error('Check status error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 10. 404 HANDLER
 app.use((req, res) => {
-    console.log(`❌ Route not found: ${req.method} ${req.url}`);
-    res.status(404).json({
-        error: 'Route not found',
-        path: req.url,
-        method: req.method,
-        availableEndpoints: [
-            'POST /process-payment',
-            'POST /check-payment-status',
-            'POST /payfast-notify',
-            'GET /health',
-            'GET /test'
-        ]
-    });
+    res.status(404).json({ error: 'Route not found', path: req.url });
 });
 
 // ===== START SERVER =====
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`
-    🚀 Salwa Collective Payment Server Started!
-    ===========================================
-    📍 Port: ${PORT}
-    🔒 Mode: ${PAYFAST_CONFIG.sandbox ? 'SANDBOX 🧪' : 'PRODUCTION 🏢'}
-    🌐 URL: https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost:' + PORT}
-    🔗 ITN URL: ${getNotifyUrl()}
+    🚀 Server started on port ${PORT}
+    🌐 Test Dashboard: http://localhost:${PORT}/test
+    🔗 ITN Endpoint: ${getNotifyUrl()}
+    🧪 Mode: ${PAYFAST_CONFIG.sandbox ? 'SANDBOX' : 'PRODUCTION'}
     
-    📋 Available Endpoints:
-    ├── POST /process-payment      - Create PayFast payment
-    ├── POST /check-payment-status - Check booking status (FIXED NAME)
-    ├── POST /payfast-notify       - PayFast ITN webhook
-    ├── GET  /health              - Health check
-    ├── GET  /test                - Test dashboard
-    ├── GET  /itn-test            - Test ITN endpoint
-    └── POST /simulate-itn        - Simulate ITN
+    📋 Endpoints:
+    - GET  /              - Home page
+    - GET  /test          - Test dashboard
+    - GET  /health        - Health check
+    - GET  /itn-test      - Test ITN endpoint
+    - POST /process-payment - Create payment
+    - POST /payfast-notify  - ITN webhook
+    - POST /check-status   - Check booking status
+    - POST /simulate-itn   - Simulate ITN
+    - POST /create-test-booking - Create test booking
     
-    🌍 CORS Allowed Origins:
-    ${allowedOrigins.map(origin => `    - ${origin}`).join('\n')}
-    
-    ⚠️  Environment Variables:
-    ├── FIREBASE_KEY              - ${process.env.FIREBASE_KEY ? '✅ Set' : '❌ Missing'}
-    ├── PAYFAST_MERCHANT_ID       - ${PAYFAST_CONFIG.merchantId}
-    ├── PAYFAST_MERCHANT_KEY      - ${PAYFAST_CONFIG.merchantKey ? '✅ Set' : '❌ Missing'}
-    ├── PAYFAST_PASSPHRASE        - ${PAYFAST_CONFIG.passphrase ? '✅ Set' : '❌ Not Set'}
-    └── PAYFAST_SANDBOX           - ${PAYFAST_CONFIG.sandbox}
-    
-    ✅ Ready to process payments!
+    ✅ Ready to receive PayFast ITN notifications!
     `);
 });
