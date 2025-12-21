@@ -41,95 +41,109 @@ const db = admin.firestore();
 
 // ========== PAYFAST CONFIG ==========
 const PAYFAST_CONFIG = {
-    merchantId: process.env.PAYFAST_MERCHANT_ID || '32449257',
-    merchantKey: process.env.PAYFAST_MERCHANT_KEY || '4wkknlvwwll3x',
-    passphrase: process.env.PAYFAST_PASSPHRASE || 'Salwa20242024',
-    sandbox: process.env.PAYFAST_SANDBOX !== 'false', // Fixed: Default to true unless explicitly false
+    merchantId: process.env.PAYFAST_MERCHANT_ID,
+    merchantKey: process.env.PAYFAST_MERCHANT_KEY,
+    passphrase: process.env.PAYFAST_PASSPHRASE || '',
+    sandbox: process.env.PAYFAST_SANDBOX === 'true',
     returnUrl: "https://salwacollective.co.za/payment-result.html?payment_return=1",
-    cancelUrl: "https://salwacollective.co.za/payment-result.html?payment_return=0",
-    productionUrl: "https://www.payfast.co.za/eng/process", // Fixed: Removed space
+    cancelUrl: "https://salwacollective.co.za/payment-result.html?payment_return=1",
+    productionUrl: "https://www.payfast.co.za/eng/process",
     sandboxUrl: "https://sandbox.payfast.co.za/eng/process"
 };
 
-// ========== CORRECT SIGNATURE FUNCTION (TESTED AND WORKING) ==========
+// ========== HELPER FUNCTIONS ==========
+function convertFirestoreTimestamp(timestamp) {
+    if (!timestamp) return new Date();
+    if (timestamp.toDate) return timestamp.toDate();
+    if (timestamp.seconds) return new Date(timestamp.seconds * 1000);
+    if (timestamp._seconds) return new Date(timestamp._seconds * 1000);
+    return new Date(timestamp);
+}
+
 function generatePayFastSignature(data, passPhrase = null) {
     console.log('🔍 Generating PayFast signature...');
 
-    // Remove signature if present
     const signatureData = { ...data };
     delete signatureData.signature;
 
-    // Filter out empty/null/undefined values
-    Object.keys(signatureData).forEach(key => {
-        if (signatureData[key] === null || signatureData[key] === undefined || signatureData[key] === '') {
-            delete signatureData[key];
-        }
-    });
-
-    // Sort keys alphabetically (PayFast requirement)
     const sortedKeys = Object.keys(signatureData).sort();
     let pfOutput = '';
 
-    // Build parameter string
-    sortedKeys.forEach(key => {
-        const value = String(signatureData[key]);
-        // PayFast uses encodeURIComponent with %20 replaced by +
-        const encodedValue = encodeURIComponent(value).replace(/%20/g, '+');
-        pfOutput += `${key}=${encodedValue}&`;
-    });
+    for (let key of sortedKeys) {
+        if (signatureData[key] !== undefined && signatureData[key] !== null) {
+            const value = signatureData[key].toString();
+            const encodedValue = encodeURIComponent(value)
+                .replace(/%20/g, '+')
+                .replace(/'/g, '%27')
+                .replace(/"/g, '%22')
+                .replace(/\(/g, '%28')
+                .replace(/\)/g, '%29')
+                .replace(/\*/g, '%2A')
+                .replace(/!/g, '%21');
+            pfOutput += `${key}=${encodedValue}&`;
+        }
+    }
 
-    // Remove trailing '&'
     if (pfOutput.endsWith('&')) {
         pfOutput = pfOutput.slice(0, -1);
     }
 
-    console.log('📝 String before passphrase:', pfOutput);
-
-    // Add passphrase if provided
-    if (passPhrase && passPhrase.trim() !== '') {
-        const encodedPassphrase = encodeURIComponent(passPhrase.trim()).replace(/%20/g, '+');
+    if (passPhrase !== null && passPhrase !== undefined && passPhrase !== '') {
+        const encodedPassphrase = encodeURIComponent(passPhrase)
+            .replace(/%20/g, '+')
+            .replace(/'/g, '%27')
+            .replace(/"/g, '%22')
+            .replace(/\(/g, '%28')
+            .replace(/\)/g, '%29')
+            .replace(/\*/g, '%2A')
+            .replace(/!/g, '%21');
         pfOutput += `&passphrase=${encodedPassphrase}`;
-        console.log('📝 String with passphrase:', pfOutput);
     }
 
-    // Generate MD5 hash
-    const signature = crypto.createHash('md5').update(pfOutput).digest('hex');
-    console.log('✅ Generated signature:', signature);
+    console.log('🔍 Signature string for MD5:', pfOutput);
+    console.log('🔍 Passphrase used:', passPhrase || 'NONE');
 
-    return signature;
+    return crypto.createHash('md5').update(pfOutput).digest('hex');
 }
 
 function verifyPayFastSignature(data, passphrase = '') {
     console.log('🔍 Verifying PayFast signature...');
 
     const submittedSignature = data.signature;
+    const signatureData = { ...data };
+    delete signatureData.signature;
 
-    // Create a clean copy without signature
-    const signatureData = {};
-    Object.keys(data).forEach(key => {
-        if (key !== 'signature' && data[key] !== undefined && data[key] !== null && data[key] !== '') {
-            signatureData[key] = data[key];
-        }
-    });
-
-    // Sort keys alphabetically
     const sortedKeys = Object.keys(signatureData).sort();
     let pfParamString = '';
 
-    sortedKeys.forEach(key => {
-        const value = signatureData[key].toString();
-        const encodedValue = encodeURIComponent(value).replace(/%20/g, '+');
-        pfParamString += `${key}=${encodedValue}&`;
-    });
+    for (const key of sortedKeys) {
+        if (signatureData[key] !== undefined && signatureData[key] !== null) {
+            const value = signatureData[key].toString();
+            const encodedValue = encodeURIComponent(value)
+                .replace(/%20/g, '+')
+                .replace(/'/g, '%27')
+                .replace(/"/g, '%22')
+                .replace(/\(/g, '%28')
+                .replace(/\)/g, '%29')
+                .replace(/\*/g, '%2A')
+                .replace(/!/g, '%21');
+            pfParamString += `${key}=${encodedValue}&`;
+        }
+    }
 
-    // Remove trailing '&'
     if (pfParamString.endsWith('&')) {
         pfParamString = pfParamString.slice(0, -1);
     }
 
-    // Add passphrase if provided
-    if (passphrase && passphrase.trim() !== '') {
-        const encodedPassphrase = encodeURIComponent(passphrase.trim()).replace(/%20/g, '+');
+    if (passphrase !== null && passphrase !== undefined && passphrase !== '') {
+        const encodedPassphrase = encodeURIComponent(passphrase)
+            .replace(/%20/g, '+')
+            .replace(/'/g, '%27')
+            .replace(/"/g, '%22')
+            .replace(/\(/g, '%28')
+            .replace(/\)/g, '%29')
+            .replace(/\*/g, '%2A')
+            .replace(/!/g, '%21');
         pfParamString += `&passphrase=${encodedPassphrase}`;
     }
 
@@ -143,22 +157,147 @@ function verifyPayFastSignature(data, passphrase = '') {
     return calculatedSignature === submittedSignature;
 }
 
-// Helper function
-function convertFirestoreTimestamp(timestamp) {
-    if (!timestamp) return new Date();
-    if (timestamp.toDate) return timestamp.toDate();
-    if (timestamp.seconds) return new Date(timestamp.seconds * 1000);
-    if (timestamp._seconds) return new Date(timestamp._seconds * 1000);
-    return new Date(timestamp);
-}
+// ========== SIMPLIFIED PROCESS PAYMENT ==========
+app.post('/process-payment', async (req, res) => {
+    try {
+        console.log('🔵 Payment request received:', req.body);
 
-// ========== DEBUG SIGNATURE ENDPOINT ==========
-app.get('/debug-signature', (req, res) => {
+        const {
+            amount, item_name, name_first, name_last, email_address,
+            cell_number, event_id, ticket_number, booking_id, ticket_quantity,
+            event_name, event_date
+        } = req.body;
+
+        // Basic validation
+        if (!amount || !item_name || !email_address || !booking_id) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing required fields',
+                received: req.body
+            });
+        }
+
+        const renderUrl = process.env.RENDER_EXTERNAL_URL || `https://${req.get('host')}`;
+
+        // SIMPLIFIED payment data - PayFast prefers minimal fields
+        const paymentData = {
+            merchant_id: PAYFAST_CONFIG.merchantId,
+            merchant_key: PAYFAST_CONFIG.merchantKey,
+            return_url: PAYFAST_CONFIG.returnUrl + '&booking_id=' + booking_id,
+            cancel_url: PAYFAST_CONFIG.cancelUrl + '&booking_id=' + booking_id,
+            notify_url: `${renderUrl}/payfast-notify`,
+            name_first: name_first || '',
+            name_last: name_last || '',
+            email_address: email_address,
+            cell_number: cell_number || '',
+            amount: parseFloat(amount).toFixed(2),
+            item_name: item_name.substring(0, 100),
+            m_payment_id: booking_id,
+            custom_str1: event_id || '',
+            custom_str2: ticket_number || '',
+            custom_str3: booking_id || '',
+            custom_int1: ticket_quantity || 1
+        };
+
+        Object.keys(paymentData).forEach(key => {
+            if (paymentData[key] === null || paymentData[key] === undefined) {
+                delete paymentData[key];
+            }
+        });
+
+        console.log('🟡 Payment data for signature:', paymentData);
+
+        const signature = generatePayFastSignature(paymentData, PAYFAST_CONFIG.passphrase);
+        paymentData.signature = signature;
+
+        console.log('🔍 Generated signature:', signature);
+        console.log('🔍 Mode:', PAYFAST_CONFIG.sandbox ? 'SANDBOX' : 'PRODUCTION');
+
+        // Store booking with timeout tracking in Firestore
+        try {
+            const bookingData = {
+                // Core booking info from frontend
+                bookingId: booking_id,
+                eventId: event_id || '',
+                ticketNumber: ticket_number || '',
+                ticketQuantity: ticket_quantity || 1,
+                totalAmount: parseFloat(amount),
+                itemName: item_name,
+                eventName: event_name || item_name,
+                eventDate: event_date || '',
+
+                // Customer info
+                customerEmail: email_address,
+                customerFirstName: name_first || '',
+                customerLastName: name_last || '',
+                customerPhone: cell_number || '',
+                userName: `${name_first || ''} ${name_last || ''}`.trim(),
+
+                // Payment tracking
+                status: 'pending_payment',
+                paymentStatus: 'PENDING',
+                isPaid: false,
+                itnReceived: false,
+
+                // Timestamps
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+
+                // Timeout tracking - 30 minutes from now
+                paymentTimeout: new Date(Date.now() + 30 * 60 * 1000),
+
+                // Payment method info
+                paymentMethod: 'payfast',
+                paymentGateway: 'payfast',
+                gatewayData: {
+                    merchantId: PAYFAST_CONFIG.merchantId,
+                    sandbox: PAYFAST_CONFIG.sandbox,
+                    signature: signature
+                },
+
+                // Additional metadata
+                ipAddress: req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress,
+                userAgent: req.headers['user-agent'] || ''
+            };
+
+            await db.collection('bookings').doc(booking_id).set(bookingData, { merge: true });
+            console.log(`✅ Booking ${booking_id} stored in Firestore with 30-minute timeout`);
+
+        } catch (firestoreError) {
+            console.error('🔴 Firestore save error:', firestoreError);
+        }
+
+        // Create redirect URL
+        const payfastUrl = PAYFAST_CONFIG.sandbox ? PAYFAST_CONFIG.sandboxUrl : PAYFAST_CONFIG.productionUrl;
+        const queryString = new URLSearchParams(paymentData).toString();
+        const redirectUrl = `${payfastUrl}?${queryString}`;
+
+        console.log('🟢 Full redirect URL:', redirectUrl);
+
+        res.json({
+            success: true,
+            redirectUrl: redirectUrl,
+            bookingId: booking_id,
+            signature: signature
+        });
+
+    } catch (error) {
+        console.error('🔴 Payment processing error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Payment processing failed',
+            message: error.message
+        });
+    }
+});
+
+// ========== MANUAL TEST ENDPOINT ==========
+app.get('/manual-test', (req, res) => {
     const testData = {
         merchant_id: PAYFAST_CONFIG.merchantId,
         merchant_key: PAYFAST_CONFIG.merchantKey,
-        return_url: 'https://salwacollective.co.za/payment-result.html?payment_return=1&booking_id=test123',
-        cancel_url: 'https://salwacollective.co.za/payment-result.html?payment_return=0&booking_id=test123',
+        return_url: PAYFAST_CONFIG.returnUrl + '&booking_id=test123',
+        cancel_url: PAYFAST_CONFIG.cancelUrl + '&booking_id=test123',
         notify_url: 'https://payfast-itn.onrender.com/payfast-notify',
         name_first: 'Test',
         name_last: 'User',
@@ -172,184 +311,68 @@ app.get('/debug-signature', (req, res) => {
     testData.signature = signature;
 
     const queryString = new URLSearchParams(testData).toString();
-    const testUrl = PAYFAST_CONFIG.sandbox
-        ? `${PAYFAST_CONFIG.sandboxUrl}?${queryString}`
-        : `${PAYFAST_CONFIG.productionUrl}?${queryString}`;
-
-    res.json({
-        success: true,
-        testData: testData,
-        signature: signature,
-        passphrase: PAYFAST_CONFIG.passphrase || 'NOT SET',
-        testUrl: testUrl,
-        config: {
-            merchantId: PAYFAST_CONFIG.merchantId,
-            merchantKey: PAYFAST_CONFIG.merchantKey ? PAYFAST_CONFIG.merchantKey.substring(0, 4) + '...' : 'MISSING',
-            sandbox: PAYFAST_CONFIG.sandbox,
-            passphraseLength: PAYFAST_CONFIG.passphrase ? PAYFAST_CONFIG.passphrase.length : 0
-        }
-    });
-});
-
-// ========== SIMPLE TEST ENDPOINT ==========
-app.get('/simple-test', (req, res) => {
-    const testData = {
-        merchant_id: PAYFAST_CONFIG.merchantId,
-        merchant_key: PAYFAST_CONFIG.merchantKey,
-        return_url: 'https://salwacollective.co.za',
-        cancel_url: 'https://salwacollective.co.za',
-        notify_url: 'https://payfast-itn.onrender.com/payfast-notify',
-        name_first: 'Test',
-        name_last: 'User',
-        email_address: 'test@example.com',
-        amount: '5.00',
-        item_name: 'Salwa Collective Test',
-        m_payment_id: 'test-' + Date.now()
-    };
-
-    const signature = generatePayFastSignature(testData, PAYFAST_CONFIG.passphrase);
-    testData.signature = signature;
+    const testUrl = `${PAYFAST_CONFIG.sandboxUrl}?${queryString}`;
 
     res.send(`
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Simple PayFast Test</title>
+            <title>PayFast Manual Test</title>
             <style>
-                body { font-family: Arial, sans-serif; padding: 20px; }
-                pre { background: #f5f5f5; padding: 15px; border-radius: 5px; }
-                .btn { background: #4CAF50; color: white; padding: 12px 24px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; margin-top: 20px; display: inline-block; }
+                body { font-family: Arial, sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }
+                .container { background: #f5f5f5; padding: 20px; border-radius: 10px; }
+                .url-box { background: white; padding: 15px; border: 1px solid #ddd; border-radius: 5px; word-break: break-all; }
+                .btn { background: #4CAF50; color: white; padding: 12px 24px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }
+                .test-card { background: #e8f5e9; padding: 15px; border-radius: 5px; margin-top: 20px; }
             </style>
         </head>
         <body>
-            <h1>🧪 Simple PayFast Test</h1>
-            <h3>Signature: ${signature}</h3>
-            <pre>${JSON.stringify(testData, null, 2)}</pre>
-            
-            <form action="${PAYFAST_CONFIG.sandbox ? PAYFAST_CONFIG.sandboxUrl : PAYFAST_CONFIG.productionUrl}" method="post">
-                ${Object.entries(testData).map(([key, value]) =>
-        `<input type="hidden" name="${key}" value="${value}">`
-    ).join('')}
-                <button type="submit" class="btn">Test PayFast Payment</button>
-            </form>
+            <div class="container">
+                <h1>🧪 PayFast Sandbox Test</h1>
+                <p><strong>Status:</strong> Using merchant ID: ${PAYFAST_CONFIG.merchantId}</p>
+                <p><strong>Passphrase:</strong> ${PAYFAST_CONFIG.passphrase ? 'SET' : 'NOT SET'}</p>
+                <p><strong>Signature:</strong> ${signature.substring(0, 20)}...</p>
+                
+                <h3>Test Payment Link:</h3>
+                <div class="url-box">${testUrl}</div>
+                
+                <p style="margin-top: 20px;">
+                    <a href="${testUrl}" target="_blank" class="btn">Open PayFast Payment Page</a>
+                </p>
+                
+                <div class="test-card">
+                    <h3>💳 Test Card Details:</h3>
+                    <ul>
+                        <li><strong>Card Number:</strong> 4000 0000 0000 0002</li>
+                        <li><strong>Expiry Date:</strong> Any future date (e.g., 12/30)</li>
+                        <li><strong>CVV:</strong> 123</li>
+                        <li><strong>3D Secure Password:</strong> payfast</li>
+                    </ul>
+                    <p><em>This is a test payment - no real money will be charged.</em></p>
+                </div>
+                
+                <div style="margin-top: 30px; padding: 15px; background: #fff3cd; border-radius: 5px;">
+                    <h3>⚠️ Troubleshooting</h3>
+                    <p>If you get "signature mismatch":</p>
+                    <ol>
+                        <li>Check your PayFast merchant dashboard passphrase setting</li>
+                        <li>Verify merchant ID and key in Render environment variables</li>
+                        <li>Try clearing browser cache and cookies</li>
+                    </ol>
+                </div>
+            </div>
         </body>
         </html>
     `);
 });
 
-// ========== PROCESS PAYMENT ==========
-app.post('/process-payment', async (req, res) => {
-    try {
-        console.log('🔵 Payment request received:', req.body);
-
-        const {
-            amount, item_name, name_first, name_last, email_address,
-            cell_number, event_id, ticket_number, booking_id, ticket_quantity,
-            event_name, event_date
-        } = req.body;
-
-        // Validation
-        if (!amount || !email_address || !booking_id) {
-            return res.status(400).json({
-                success: false,
-                error: 'Missing required fields',
-                received: req.body
-            });
-        }
-
-        // Basic payment data
-        const paymentData = {
-            merchant_id: PAYFAST_CONFIG.merchantId,
-            merchant_key: PAYFAST_CONFIG.merchantKey,
-            return_url: `${PAYFAST_CONFIG.returnUrl}&booking_id=${booking_id}`,
-            cancel_url: `${PAYFAST_CONFIG.cancelUrl}&booking_id=${booking_id}`,
-            notify_url: `https://payfast-itn.onrender.com/payfast-notify`,
-            email_address: email_address,
-            amount: parseFloat(amount).toFixed(2),
-            item_name: (item_name || 'Salwa Event').substring(0, 100),
-            m_payment_id: booking_id
-        };
-
-        // Optional fields
-        if (name_first) paymentData.name_first = name_first;
-        if (name_last) paymentData.name_last = name_last;
-        if (cell_number) paymentData.cell_number = cell_number;
-
-        console.log('🟡 Clean payment data:', paymentData);
-
-        // Generate signature
-        const signature = generatePayFastSignature(paymentData, PAYFAST_CONFIG.passphrase);
-        paymentData.signature = signature;
-
-        // Store booking in Firestore
-        try {
-            const bookingData = {
-                bookingId: booking_id,
-                eventId: event_id || '',
-                ticketNumber: ticket_number || '',
-                ticketQuantity: ticket_quantity || 1,
-                totalAmount: parseFloat(amount),
-                itemName: item_name || 'Salwa Event',
-                eventName: event_name || item_name || 'Salwa Event',
-                eventDate: event_date || '',
-                customerEmail: email_address,
-                customerFirstName: name_first || '',
-                customerLastName: name_last || '',
-                customerPhone: cell_number || '',
-                userName: `${name_first || ''} ${name_last || ''}`.trim(),
-                status: 'pending_payment',
-                paymentStatus: 'PENDING',
-                isPaid: false,
-                itnReceived: false,
-                createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
-                paymentTimeout: new Date(Date.now() + 30 * 60 * 1000),
-                paymentMethod: 'payfast',
-                gatewayData: {
-                    merchantId: PAYFAST_CONFIG.merchantId,
-                    sandbox: PAYFAST_CONFIG.sandbox,
-                    signature: signature
-                }
-            };
-
-            await db.collection('bookings').doc(booking_id).set(bookingData);
-            console.log(`✅ Booking ${booking_id} stored`);
-
-        } catch (firestoreError) {
-            console.error('🔴 Firestore error:', firestoreError);
-        }
-
-        // Create redirect URL
-        const payfastUrl = PAYFAST_CONFIG.sandbox ? PAYFAST_CONFIG.sandboxUrl : PAYFAST_CONFIG.productionUrl;
-        const queryString = new URLSearchParams(paymentData).toString();
-        const redirectUrl = `${payfastUrl}?${queryString}`;
-
-        console.log('🟢 Redirect URL:', redirectUrl);
-
-        res.json({
-            success: true,
-            redirectUrl: redirectUrl,
-            bookingId: booking_id,
-            signature: signature
-        });
-
-    } catch (error) {
-        console.error('🔴 Payment error:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Payment processing failed',
-            message: error.message
-        });
-    }
-});
-
 // ========== ITN HANDLER ==========
 app.post('/payfast-notify', async (req, res) => {
     const data = req.body;
-    console.log('🟣 ITN received:', JSON.stringify(data, null, 2));
 
     try {
-        // Validate signature
+        console.log('🟣 ITN received:', JSON.stringify(data, null, 2));
+
         const isValidSignature = verifyPayFastSignature(data, PAYFAST_CONFIG.passphrase);
 
         if (!isValidSignature) {
@@ -357,7 +380,6 @@ app.post('/payfast-notify', async (req, res) => {
             return res.status(400).send('Invalid signature');
         }
 
-        // Verify with PayFast
         const verifyUrl = PAYFAST_CONFIG.sandbox
             ? 'https://sandbox.payfast.co.za/eng/query/validate'
             : 'https://www.payfast.co.za/eng/query/validate';
@@ -374,23 +396,22 @@ app.post('/payfast-notify', async (req, res) => {
             }
         );
 
-        console.log('🔍 PayFast response:', response.data);
-
         if (response.data.trim() === 'VALID') {
             const bookingId = data.m_payment_id;
             const paymentStatus = data.payment_status?.toUpperCase() || '';
 
-            console.log(`🟢 Valid ITN for ${bookingId}, status: ${paymentStatus}`);
+            console.log(`🟢 Valid ITN for booking ${bookingId}, status: ${paymentStatus}`);
 
             const updateData = {
                 paymentStatus: paymentStatus,
                 payfastPaymentId: data.pf_payment_id,
-                amountPaid: parseFloat(data.amount_gross || 0),
+                amountPaid: parseFloat(data.amount_gross),
                 fee: parseFloat(data.amount_fee || 0),
                 itnReceived: true,
                 itnTimestamp: admin.firestore.FieldValue.serverTimestamp(),
                 payerEmail: data.email_address,
                 payerPhone: data.cell_number || '',
+                payerName: `${data.name_first || ''} ${data.name_last || ''}`.trim(),
                 lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
                 itnData: data
             };
@@ -402,24 +423,42 @@ app.post('/payfast-notify', async (req, res) => {
             } else if (paymentStatus === 'CANCELLED' || paymentStatus === 'USER_CANCELLED') {
                 updateData.status = 'cancelled';
                 updateData.isPaid = false;
-                updateData.cancellationReason = 'user_cancelled';
+                updateData.cancellationReason = 'user_cancelled_on_payfast';
+                updateData.cancelledAt = admin.firestore.FieldValue.serverTimestamp();
             } else if (paymentStatus === 'FAILED') {
                 updateData.status = 'failed';
                 updateData.isPaid = false;
                 updateData.cancellationReason = 'payment_failed';
+                updateData.cancelledAt = admin.firestore.FieldValue.serverTimestamp();
+            } else {
+                updateData.status = paymentStatus.toLowerCase();
+                updateData.isPaid = false;
             }
 
             await db.collection('bookings').doc(bookingId).update(updateData);
-            console.log(`✅ Booking ${bookingId} updated`);
+            console.log(`✅ Booking ${bookingId} updated in Firebase`);
 
         } else {
-            console.error('🔴 Invalid ITN:', response.data);
+            console.error('🔴 Invalid ITN response from PayFast:', response.data);
         }
 
         res.status(200).send('OK');
 
     } catch (err) {
-        console.error('🔴 ITN error:', err);
+        console.error('🔴 ITN processing error:', err);
+
+        if (data && data.m_payment_id) {
+            try {
+                await db.collection('bookings').doc(data.m_payment_id).update({
+                    paymentStatus: 'itn_error',
+                    lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+                    itnError: err.message
+                });
+            } catch (firestoreErr) {
+                console.error('Could not update Firestore:', firestoreErr);
+            }
+        }
+
         res.status(500).send('Server error');
     }
 });
@@ -430,16 +469,61 @@ app.post('/check-payment-status', async (req, res) => {
         const { bookingId } = req.body;
 
         if (!bookingId) {
-            return res.status(400).json({ success: false, error: 'Booking ID required' });
+            return res.status(400).json({
+                success: false,
+                error: 'Booking ID required'
+            });
         }
 
         const bookingDoc = await db.collection('bookings').doc(bookingId).get();
 
         if (!bookingDoc.exists) {
-            return res.status(404).json({ success: false, error: 'Booking not found' });
+            return res.status(404).json({
+                success: false,
+                error: 'Booking not found'
+            });
         }
 
         const bookingData = bookingDoc.data();
+
+        // Auto-cancel if payment has timed out
+        if (bookingData.paymentTimeout) {
+            const timeoutDate = convertFirestoreTimestamp(bookingData.paymentTimeout);
+            const now = new Date();
+
+            if (timeoutDate < now &&
+                (bookingData.status === 'pending' || bookingData.status === 'pending_payment')) {
+
+                console.log(`⏰ Auto-cancelling timed out booking: ${bookingId}`);
+
+                const updateData = {
+                    status: 'cancelled',
+                    paymentStatus: 'TIMEOUT_AUTO_CANCELLED',
+                    isPaid: false,
+                    cancellationReason: 'payment_timeout',
+                    cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
+                    lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+                };
+
+                await db.collection('bookings').doc(bookingId).update(updateData);
+
+                return res.json({
+                    success: true,
+                    bookingId: bookingId,
+                    status: 'cancelled',
+                    paymentStatus: 'TIMEOUT_AUTO_CANCELLED',
+                    isPaid: false,
+                    autoCancelled: true,
+                    itnReceived: bookingData.itnReceived || false,
+                    ticketNumber: bookingData.ticketNumber || '',
+                    eventName: bookingData.eventName || bookingData.itemName || '',
+                    eventDate: bookingData.eventDate || '',
+                    userName: bookingData.userName || `${bookingData.customerFirstName || ''} ${bookingData.customerLastName || ''}`.trim(),
+                    totalAmount: bookingData.totalAmount || 0,
+                    updatedAt: bookingData.lastUpdated || bookingData.createdAt
+                });
+            }
+        }
 
         res.json({
             success: true,
@@ -448,85 +532,167 @@ app.post('/check-payment-status', async (req, res) => {
             paymentStatus: bookingData.paymentStatus || 'pending',
             isPaid: bookingData.isPaid || false,
             itnReceived: bookingData.itnReceived || false,
-            eventName: bookingData.eventName || '',
-            totalAmount: bookingData.totalAmount || 0
+            ticketNumber: bookingData.ticketNumber || '',
+            eventName: bookingData.eventName || bookingData.itemName || '',
+            eventDate: bookingData.eventDate || '',
+            userName: bookingData.userName || `${bookingData.customerFirstName || ''} ${bookingData.customerLastName || ''}`.trim(),
+            totalAmount: bookingData.totalAmount || 0,
+            updatedAt: bookingData.lastUpdated || bookingData.createdAt,
+            autoCancelled: false
         });
 
     } catch (error) {
-        console.error('Status check error:', error);
-        res.status(500).json({ success: false, error: 'Server error' });
+        console.error('Error checking payment status:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Server error'
+        });
     }
 });
 
-// ========== VERIFY PAYMENT ==========
-app.post('/verify-payment', async (req, res) => {
+// ========== DIRECT CANCELLATION ENDPOINT ==========
+app.post('/direct-cancel', async (req, res) => {
     try {
-        const { bookingId } = req.body;
+        const { bookingId, reason = 'user_cancelled' } = req.body;
+
+        console.log(`❌ Direct cancellation for booking: ${bookingId}`);
 
         if (!bookingId) {
             return res.status(400).json({ success: false, error: 'Booking ID required' });
         }
 
-        const bookingDoc = await db.collection('bookings').doc(bookingId).get();
+        const updateData = {
+            paymentStatus: 'CANCELLED',
+            status: 'cancelled',
+            isPaid: false,
+            cancellationReason: reason,
+            cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
+            lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+            itnReceived: false,
+            directCancel: true
+        };
 
-        if (!bookingDoc.exists) {
-            return res.status(404).json({ success: false, error: 'Booking not found' });
-        }
+        await db.collection('bookings').doc(bookingId).update(updateData);
 
-        const bookingData = bookingDoc.data();
+        console.log(`✅ Booking ${bookingId} marked as cancelled`);
 
         res.json({
             success: true,
-            valid: bookingData.isPaid || bookingData.status === 'confirmed',
-            booking: bookingData
+            message: 'Booking cancelled',
+            bookingId: bookingId
         });
 
     } catch (error) {
-        console.error('Verify error:', error);
-        res.status(500).json({ success: false, error: 'Server error' });
+        console.error('🔴 Direct cancellation error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Cancellation failed'
+        });
     }
+});
+
+// ========== CLEANUP STALE PAYMENTS ==========
+app.post('/cleanup-stale-payments', async (req, res) => {
+    try {
+        const hoursAgo = 24;
+        const cutoffTime = new Date(Date.now() - hoursAgo * 60 * 60 * 1000);
+
+        console.log(`🕒 Cleaning up payments older than ${hoursAgo} hours...`);
+
+        const bookingsRef = db.collection('bookings');
+        const query = bookingsRef
+            .where('status', 'in', ['pending', 'pending_payment'])
+            .where('createdAt', '<', cutoffTime);
+
+        const snapshot = await query.get();
+
+        let cancelledCount = 0;
+        const batch = db.batch();
+
+        snapshot.forEach(doc => {
+            const updateData = {
+                status: 'cancelled',
+                paymentStatus: 'TIMEOUT_CANCELLED',
+                isPaid: false,
+                cancellationReason: 'stale_payment_cleanup',
+                cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
+                lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+            };
+
+            batch.update(doc.ref, updateData);
+            cancelledCount++;
+        });
+
+        await batch.commit();
+
+        console.log(`✅ Cancelled ${cancelledCount} stale payments`);
+
+        res.json({
+            success: true,
+            cancelledCount: cancelledCount,
+            message: `Cancelled ${cancelledCount} stale payments`
+        });
+
+    } catch (error) {
+        console.error('🔴 Cleanup error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Cleanup failed'
+        });
+    }
+});
+
+// ========== TEST CANCELLATION ENDPOINT ==========
+app.post('/test-cancel/:bookingId', async (req, res) => {
+    const bookingId = req.params.bookingId;
+
+    const updateData = {
+        paymentStatus: 'CANCELLED',
+        status: 'cancelled',
+        isPaid: false,
+        cancellationReason: 'test_cancellation',
+        cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+        testMode: true
+    };
+
+    await db.collection('bookings').doc(bookingId).update(updateData);
+
+    res.json({
+        success: true,
+        message: `Booking ${bookingId} cancelled for testing`,
+        bookingId: bookingId
+    });
 });
 
 // ========== HEALTH CHECK ==========
 app.get('/health', (req, res) => {
+    const isDemoAccount = PAYFAST_CONFIG.merchantId === '10000100';
+
     res.json({
         status: 'healthy',
         timestamp: new Date().toISOString(),
         service: 'Salwa Payment Server',
-        mode: PAYFAST_CONFIG.sandbox ? 'SANDBOX' : 'PRODUCTION',
-        merchantId: PAYFAST_CONFIG.merchantId,
-        passphrase: PAYFAST_CONFIG.passphrase ? 'SET' : 'NOT SET'
-    });
-});
-
-// ========== TEST WITH PAYFAST SIGNATURE GENERATOR ==========
-app.get('/test-signature', (req, res) => {
-    // Same data as PayFast's signature generator
-    const testData = {
-        merchant_id: '10000100', // PayFast test merchant
-        merchant_key: '46f0cd694581a',
-        return_url: 'http://www.example.com/return',
-        cancel_url: 'http://www.example.com/cancel',
-        notify_url: 'http://www.example.com/notify',
-        name_first: 'First Name',
-        name_last: 'Last Name',
-        email_address: 'test@example.com',
-        m_payment_id: '1234',
-        amount: '100.00',
-        item_name: 'Test Item',
-        item_description: 'Description'
-    };
-
-    // Test with and without passphrase
-    const signatureNoPassphrase = generatePayFastSignature({ ...testData }, '');
-    const signatureWithPassphrase = generatePayFastSignature({ ...testData }, 'jt7NOE43F5Pn');
-
-    res.json({
-        testData: testData,
-        signatureNoPassphrase: signatureNoPassphrase,
-        signatureWithPassphrase: signatureWithPassphrase,
-        expectedNoPassphrase: '5e715ace54207fe9b294977d5c12db5c',
-        expectedWithPassphrase: '251dbb005d1d7d06239e2565e0c57a5d'
+        endpoints: {
+            processPayment: 'POST /process-payment',
+            itnHandler: 'POST /payfast-notify',
+            checkStatus: 'POST /check-payment-status',
+            directCancel: 'POST /direct-cancel',
+            cleanup: 'POST /cleanup-stale-payments',
+            testCancel: 'POST /test-cancel/:bookingId',
+            manualTest: 'GET /manual-test',
+            health: 'GET /health'
+        },
+        config: {
+            merchantId: PAYFAST_CONFIG.merchantId ? PAYFAST_CONFIG.merchantId.substring(0, 4) + '...' : 'MISSING',
+            merchantKey: PAYFAST_CONFIG.merchantKey ? PAYFAST_CONFIG.merchantKey.substring(0, 4) + '...' : 'MISSING',
+            passphrase: PAYFAST_CONFIG.passphrase ? 'SET (' + PAYFAST_CONFIG.passphrase.substring(0, 4) + '...)' : 'MISSING',
+            sandbox: PAYFAST_CONFIG.sandbox,
+            firebase: serviceAccount.project_id ? 'CONNECTED' : 'DISCONNECTED'
+        },
+        warning: isDemoAccount ?
+            '⚠️ USING PAYFAST DEMO ACCOUNT! Update with YOUR merchant ID' :
+            '✅ Using your merchant account'
     });
 });
 
@@ -537,26 +703,23 @@ app.listen(PORT, () => {
     🚀 Salwa Payment Server Started!
     📍 Port: ${PORT}
     🔒 Mode: ${PAYFAST_CONFIG.sandbox ? 'SANDBOX 🧪' : 'PRODUCTION 🏢'}
-    🔑 Merchant ID: ${PAYFAST_CONFIG.merchantId}
-    📝 Passphrase: ${PAYFAST_CONFIG.passphrase ? 'SET' : 'NOT SET'}
+    🌐 URL: https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost:' + PORT}
     
-    📋 Test Endpoints:
-    -----------------
-    GET  /health          - Health check
-    GET  /debug-signature - Debug signature
-    GET  /simple-test     - Simple test form
-    GET  /test-signature  - Compare with PayFast generator
-    POST /process-payment - Process payment
-    POST /payfast-notify  - ITN handler
-    POST /check-payment-status - Check status
+    📋 Endpoints:
+    ├── POST /process-payment    - Create payment links
+    ├── POST /payfast-notify     - Receive ITN notifications
+    ├── POST /check-payment-status - Check booking status
+    ├── POST /direct-cancel      - Manual cancellation
+    ├── POST /cleanup-stale-payments - Cleanup old payments
+    ├── POST /test-cancel/:id    - Test cancellation
+    ├── GET  /manual-test        - Manual PayFast test page
+    └── GET  /health             - Server health check
     
-    ⚠️  For LIVE Production:
-    ---------------------
-    1. Set PAYFAST_SANDBOX=false in Render
-    2. Verify LIVE credentials in PayFast dashboard
-    3. Enable ITN in PayFast settings
-    4. Test with small amount first
-    
-    🌐 External URL: https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost:' + PORT}
+    ⚠️  Make sure these env vars are set in Render:
+    ├── FIREBASE_KEY
+    ├── PAYFAST_MERCHANT_ID=10044213
+    ├── PAYFAST_MERCHANT_KEY=9s7vajpkdyycf
+    ├── PAYFAST_PASSPHRASE=salwa20242024
+    └── PAYFAST_SANDBOX=true
     `);
 });
