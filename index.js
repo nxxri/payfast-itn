@@ -45,7 +45,7 @@ const PAYFAST_CONFIG = {
     merchantId: process.env.PAYFAST_MERCHANT_ID,
     merchantKey: process.env.PAYFAST_MERCHANT_KEY,
     passphrase: process.env.PAYFAST_PASSPHRASE || '',
-    sandbox: process.env.PAYFAST_SANDBOX === 'false',
+    sandbox: process.env.PAYFAST_SANDBOX === 'true',
     returnUrl: "https://salwacollective.co.za/payment-result.html?payment_return=1",
     cancelUrl: "https://salwacollective.co.za/payment-result.html?payment_return=0",
     productionUrl: "https://www.payfast.co.za/eng/process",
