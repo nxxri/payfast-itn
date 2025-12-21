@@ -1,5 +1,4 @@
-﻿
-const express = require('express');
+﻿const express = require('express');
 const bodyParser = require('body-parser');
 const admin = require('firebase-admin');
 const axios = require('axios');
@@ -61,48 +60,38 @@ function convertFirestoreTimestamp(timestamp) {
     return new Date(timestamp);
 }
 
-function generatePayFastSignature(data, passPhrase = null) {
+function generatePayFastSignature(data, passPhrase = '') {
     console.log('🔍 Generating PayFast signature...');
 
     const signatureData = { ...data };
     delete signatureData.signature;
 
-    const sortedKeys = Object.keys(signatureData).sort();
+    // Filter out empty/null values and sort keys
+    const sortedKeys = Object.keys(signatureData)
+        .filter(key => signatureData[key] !== undefined && signatureData[key] !== null && signatureData[key] !== '')
+        .sort();
+
     let pfOutput = '';
 
     for (let key of sortedKeys) {
-        if (signatureData[key] !== undefined && signatureData[key] !== null) {
-            const value = signatureData[key].toString();
-            const encodedValue = encodeURIComponent(value)
-                .replace(/%20/g, '+')
-                .replace(/'/g, '%27')
-                .replace(/"/g, '%22')
-                .replace(/\(/g, '%28')
-                .replace(/\)/g, '%29')
-                .replace(/\*/g, '%2A')
-                .replace(/!/g, '%21');
-            pfOutput += `${key}=${encodedValue}&`;
-        }
+        const value = String(signatureData[key]).trim();
+        const encodedValue = encodeURIComponent(value);
+        pfOutput += `${key}=${encodedValue}&`;
     }
 
+    // Remove trailing '&' if present
     if (pfOutput.endsWith('&')) {
         pfOutput = pfOutput.slice(0, -1);
     }
 
-    if (passPhrase !== null && passPhrase !== undefined && passPhrase !== '') {
-        const encodedPassphrase = encodeURIComponent(passPhrase)
-            .replace(/%20/g, '+')
-            .replace(/'/g, '%27')
-            .replace(/"/g, '%22')
-            .replace(/\(/g, '%28')
-            .replace(/\)/g, '%29')
-            .replace(/\*/g, '%2A')
-            .replace(/!/g, '%21');
+    // Add passphrase if provided
+    if (passPhrase && passPhrase.trim() !== '') {
+        const encodedPassphrase = encodeURIComponent(passPhrase.trim());
         pfOutput += `&passphrase=${encodedPassphrase}`;
     }
 
     console.log('🔍 Signature string for MD5:', pfOutput);
-    console.log('🔍 Passphrase used:', passPhrase || 'NONE');
+    console.log('🔍 Passphrase used:', passPhrase ? 'YES' : 'NONE');
 
     return crypto.createHash('md5').update(pfOutput).digest('hex');
 }
@@ -114,37 +103,27 @@ function verifyPayFastSignature(data, passphrase = '') {
     const signatureData = { ...data };
     delete signatureData.signature;
 
-    const sortedKeys = Object.keys(signatureData).sort();
+    // Filter out empty/null values and sort keys
+    const sortedKeys = Object.keys(signatureData)
+        .filter(key => signatureData[key] !== undefined && signatureData[key] !== null && signatureData[key] !== '')
+        .sort();
+
     let pfParamString = '';
 
     for (const key of sortedKeys) {
-        if (signatureData[key] !== undefined && signatureData[key] !== null) {
-            const value = signatureData[key].toString();
-            const encodedValue = encodeURIComponent(value)
-                .replace(/%20/g, '+')
-                .replace(/'/g, '%27')
-                .replace(/"/g, '%22')
-                .replace(/\(/g, '%28')
-                .replace(/\)/g, '%29')
-                .replace(/\*/g, '%2A')
-                .replace(/!/g, '%21');
-            pfParamString += `${key}=${encodedValue}&`;
-        }
+        const value = String(signatureData[key]).trim();
+        const encodedValue = encodeURIComponent(value);
+        pfParamString += `${key}=${encodedValue}&`;
     }
 
+    // Remove trailing '&' if present
     if (pfParamString.endsWith('&')) {
         pfParamString = pfParamString.slice(0, -1);
     }
 
-    if (passphrase !== null && passphrase !== undefined && passphrase !== '') {
-        const encodedPassphrase = encodeURIComponent(passphrase)
-            .replace(/%20/g, '+')
-            .replace(/'/g, '%27')
-            .replace(/"/g, '%22')
-            .replace(/\(/g, '%28')
-            .replace(/\)/g, '%29')
-            .replace(/\*/g, '%2A')
-            .replace(/!/g, '%21');
+    // Add passphrase if provided
+    if (passphrase && passphrase.trim() !== '') {
+        const encodedPassphrase = encodeURIComponent(passphrase.trim());
         pfParamString += `&passphrase=${encodedPassphrase}`;
     }
 
@@ -167,9 +146,9 @@ async function verifyPaymentWithPayFast(m_payment_id) {
             ? 'https://sandbox.payfast.co.za/eng/query/validate'
             : 'https://www.payfast.co.za/eng/query/validate';
 
+        // CORRECTED: Remove merchant_key from validation request
         const requestData = {
             merchant_id: PAYFAST_CONFIG.merchantId,
-            merchant_key: PAYFAST_CONFIG.merchantKey,
             m_payment_id: m_payment_id
         };
 
@@ -958,6 +937,7 @@ app.listen(PORT, () => {
     🌐 URL: https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost:' + PORT}
     
     🔥 NEW FEATURE: IMMEDIATE PAYFAST VALIDATION
+    ✓ Fixed signature generation (no more 400 errors!)
     ✓ Instant payment confirmation via PayFast API
     ✓ No waiting for ITN notifications
     ✓ Real-time spot updates
