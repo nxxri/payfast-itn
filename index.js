@@ -45,8 +45,8 @@ const PAYFAST_CONFIG = {
     merchantKey: process.env.PAYFAST_MERCHANT_KEY,
     passphrase: process.env.PAYFAST_PASSPHRASE || '',
     sandbox: process.env.PAYFAST_SANDBOX === 'true',
-    returnUrl: process.env.RETURN_URL || "https://salwacollective.co.za/payment-result.html?payment_return=1",
-    cancelUrl: process.env.CANCEL_URL || "https://salwacollective.co.za/payment-result.html?payment_return=0",
+    returnUrl: "https://salwacollective.co.za/payment-result.html?payment_return=1",
+    cancelUrl: "https://salwacollective.co.za/payment-result.html?payment_return=1",
     productionUrl: "https://www.payfast.co.za/eng/process",
     sandboxUrl: "https://sandbox.payfast.co.za/eng/process"
 };
@@ -63,87 +63,101 @@ function convertFirestoreTimestamp(timestamp) {
 function generatePayFastSignature(data, passPhrase = null) {
     console.log('🔍 Generating PayFast signature...');
 
-    // 1. Create a clean copy without empty values or existing signature
-    const cleanData = {};
-    for (const [key, value] of Object.entries(data)) {
-        if (value !== undefined && value !== null && value !== '' && key !== 'signature') {
-            cleanData[key] = value.toString();
+    const signatureData = { ...data };
+    delete signatureData.signature;
+
+    const sortedKeys = Object.keys(signatureData).sort();
+    let pfOutput = '';
+
+    for (let key of sortedKeys) {
+        if (signatureData[key] !== undefined && signatureData[key] !== null) {
+            const value = signatureData[key].toString();
+            const encodedValue = encodeURIComponent(value)
+                .replace(/%20/g, '+')
+                .replace(/'/g, '%27')
+                .replace(/"/g, '%22')
+                .replace(/\(/g, '%28')
+                .replace(/\)/g, '%29')
+                .replace(/\*/g, '%2A')
+                .replace(/!/g, '%21');
+            pfOutput += `${key}=${encodedValue}&`;
         }
     }
 
-    // 2. Sort keys alphabetically (PayFast requirement)
-    const sortedKeys = Object.keys(cleanData).sort();
-
-    // 3. Build the parameter string (CRITICAL: PayFast's exact format)
-    let pfParamString = '';
-    for (const key of sortedKeys) {
-        // Use encodeURIComponent and replace %20 with + (PayFast standard)
-        const encodedValue = encodeURIComponent(cleanData[key]).replace(/%20/g, '+');
-        pfParamString += `${key}=${encodedValue}&`;
+    if (pfOutput.endsWith('&')) {
+        pfOutput = pfOutput.slice(0, -1);
     }
 
-    // Remove trailing '&'
-    pfParamString = pfParamString.slice(0, -1);
-
-    // 4. Add passphrase if provided (IMPORTANT: Must be encoded and added)
-    if (passPhrase && passPhrase.trim() !== '') {
-        const encodedPassphrase = encodeURIComponent(passPhrase.trim()).replace(/%20/g, '+');
-        pfParamString += `&passphrase=${encodedPassphrase}`;
+    if (passPhrase !== null && passPhrase !== undefined && passPhrase !== '') {
+        const encodedPassphrase = encodeURIComponent(passPhrase)
+            .replace(/%20/g, '+')
+            .replace(/'/g, '%27')
+            .replace(/"/g, '%22')
+            .replace(/\(/g, '%28')
+            .replace(/\)/g, '%29')
+            .replace(/\*/g, '%2A')
+            .replace(/!/g, '%21');
+        pfOutput += `&passphrase=${encodedPassphrase}`;
     }
 
-    console.log('🔍 String for MD5 (exact):', pfParamString);
+    console.log('🔍 Signature string for MD5:', pfOutput);
     console.log('🔍 Passphrase used:', passPhrase || 'NONE');
 
-    // 5. Calculate MD5 hash
-    const signature = crypto.createHash('md5').update(pfParamString).digest('hex');
-    console.log('🔍 Generated signature:', signature);
-
-    return signature;
+    return crypto.createHash('md5').update(pfOutput).digest('hex');
 }
 
 function verifyPayFastSignature(data, passphrase = '') {
     console.log('🔍 Verifying PayFast signature...');
 
     const submittedSignature = data.signature;
-    const cleanData = { ...data };
-    delete cleanData.signature;
+    const signatureData = { ...data };
+    delete signatureData.signature;
 
-    // Remove empty values
-    for (const key in cleanData) {
-        if (cleanData[key] === undefined || cleanData[key] === null || cleanData[key] === '') {
-            delete cleanData[key];
+    const sortedKeys = Object.keys(signatureData).sort();
+    let pfParamString = '';
+
+    for (const key of sortedKeys) {
+        if (signatureData[key] !== undefined && signatureData[key] !== null) {
+            const value = signatureData[key].toString();
+            const encodedValue = encodeURIComponent(value)
+                .replace(/%20/g, '+')
+                .replace(/'/g, '%27')
+                .replace(/"/g, '%22')
+                .replace(/\(/g, '%28')
+                .replace(/\)/g, '%29')
+                .replace(/\*/g, '%2A')
+                .replace(/!/g, '%21');
+            pfParamString += `${key}=${encodedValue}&`;
         }
     }
 
-    // Sort alphabetically
-    const sortedKeys = Object.keys(cleanData).sort();
-
-    // Build parameter string
-    let pfParamString = '';
-    for (const key of sortedKeys) {
-        const encodedValue = encodeURIComponent(cleanData[key].toString()).replace(/%20/g, '+');
-        pfParamString += `${key}=${encodedValue}&`;
+    if (pfParamString.endsWith('&')) {
+        pfParamString = pfParamString.slice(0, -1);
     }
 
-    pfParamString = pfParamString.slice(0, -1);
-
-    // Add passphrase
-    if (passphrase && passphrase.trim() !== '') {
-        const encodedPassphrase = encodeURIComponent(passphrase.trim()).replace(/%20/g, '+');
+    if (passphrase !== null && passphrase !== undefined && passphrase !== '') {
+        const encodedPassphrase = encodeURIComponent(passphrase)
+            .replace(/%20/g, '+')
+            .replace(/'/g, '%27')
+            .replace(/"/g, '%22')
+            .replace(/\(/g, '%28')
+            .replace(/\)/g, '%29')
+            .replace(/\*/g, '%2A')
+            .replace(/!/g, '%21');
         pfParamString += `&passphrase=${encodedPassphrase}`;
     }
 
-    console.log('🔍 Verification string:', pfParamString);
-
     const calculatedSignature = crypto.createHash('md5').update(pfParamString).digest('hex');
 
-    console.log('🔍 Submitted:', submittedSignature);
-    console.log('🔍 Calculated:', calculatedSignature);
-    console.log('🔍 Match?', calculatedSignature === submittedSignature);
+    console.log('🔍 Signature comparison:');
+    console.log('Submitted:', submittedSignature);
+    console.log('Calculated:', calculatedSignature);
+    console.log('Match?', calculatedSignature === submittedSignature);
 
     return calculatedSignature === submittedSignature;
+}
 
- }// ========== SIMPLIFIED PROCESS PAYMENT ==========
+// ========== SIMPLIFIED PROCESS PAYMENT ==========
 app.post('/process-payment', async (req, res) => {
     try {
         console.log('🔵 Payment request received:', req.body);
@@ -650,108 +664,7 @@ app.post('/test-cancel/:bookingId', async (req, res) => {
         bookingId: bookingId
     });
 });
-// ========== PAYFAST IMMEDIATE VERIFICATION API ==========
-app.post('/verify-payment', async (req, res) => {
-    try {
-        const { bookingId } = req.body;
 
-        if (!bookingId) {
-            return res.status(400).json({
-                success: false,
-                valid: false,
-                message: 'Booking ID required'
-            });
-        }
-
-        console.log(`⚡ Immediate verification requested for: ${bookingId}`);
-
-        // Get booking from Firestore
-        const bookingDoc = await db.collection('bookings').doc(bookingId).get();
-
-        if (!bookingDoc.exists) {
-            return res.status(404).json({
-                success: false,
-                valid: false,
-                message: 'Booking not found'
-            });
-        }
-
-        const bookingData = bookingDoc.data();
-        const status = bookingData.status || 'pending';
-        const paymentStatus = bookingData.paymentStatus || 'PENDING';
-
-        console.log(`📊 Booking status: ${status}, Payment: ${paymentStatus}`);
-
-        // Check for immediate confirmation (ITN already processed)
-        if (status === 'confirmed' && paymentStatus === 'COMPLETE') {
-            console.log(`✅ Payment already confirmed via ITN for: ${bookingId}`);
-
-            return res.json({
-                success: true,
-                valid: true,
-                message: 'Payment confirmed via ITN',
-                validationSource: 'itn_confirmed',
-                booking: {
-                    bookingId: bookingId,
-                    status: 'confirmed',
-                    paymentStatus: 'COMPLETE',
-                    isPaid: bookingData.isPaid || false,
-                    ticketNumber: bookingData.ticketNumber || '',
-                    eventName: bookingData.eventName || bookingData.itemName || '',
-                    eventDate: bookingData.eventDate || '',
-                    userName: bookingData.userName || `${bookingData.customerFirstName || ''} ${bookingData.customerLastName || ''}`.trim(),
-                    customerEmail: bookingData.customerEmail || '',
-                    customerPhone: bookingData.customerPhone || '',
-                    totalAmount: bookingData.totalAmount || 0,
-                    ticketQuantity: bookingData.ticketQuantity || 1,
-                    discountApplied: bookingData.discountApplied || '',
-                    discountAmount: bookingData.discountAmount || 0,
-                    addons: bookingData.addons || [],
-                    emergencyContactName: bookingData.emergencyContactName || '',
-                    emergencyContactPhone: bookingData.emergencyContactPhone || '',
-                    paymentDate: bookingData.paymentDate || bookingData.createdAt
-                }
-            });
-        }
-
-        // Check if cancelled
-        if (status === 'cancelled' || paymentStatus === 'CANCELLED' || paymentStatus === 'USER_CANCELLED') {
-            return res.json({
-                success: true,
-                valid: false,
-                message: 'Payment was cancelled',
-                booking: bookingData
-            });
-        }
-
-        // Check if failed
-        if (status === 'failed' || paymentStatus === 'FAILED') {
-            return res.json({
-                success: true,
-                valid: false,
-                message: 'Payment failed',
-                booking: bookingData
-            });
-        }
-
-        // Payment still pending
-        return res.json({
-            success: true,
-            valid: false,
-            message: 'Payment still pending',
-            booking: bookingData
-        });
-
-    } catch (error) {
-        console.error('🔴 Immediate verification error:', error);
-        res.status(500).json({
-            success: false,
-            valid: false,
-            message: 'Verification failed',
-            error: error.message
-        });
-    }
-});
 // ========== HEALTH CHECK ==========
 app.get('/health', (req, res) => {
     const isDemoAccount = PAYFAST_CONFIG.merchantId === '10000100';
@@ -809,4 +722,4 @@ app.listen(PORT, () => {
     ├── PAYFAST_PASSPHRASE=salwa20242024
     └── PAYFAST_SANDBOX=true
     `);
-}); 
+});  will this backend work with this payment result and ucoming events code read all carefulyy
