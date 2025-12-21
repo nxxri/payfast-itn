@@ -3,25 +3,55 @@ const bodyParser = require('body-parser');
 const admin = require('firebase-admin');
 const axios = require('axios');
 const querystring = require('querystring');
-const crypto = require('crypto');
+const crypto = require('rypto');
 const cors = require('cors');
 
 const app = express();
 
 // ===== MIDDLEWARE SETUP =====
-app.use(cors({
-    origin: '*',
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
-}));
+// Get allowed origins from environment variable or use default
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(',')
+    : [
+        'https://salwacollective.co.za',
+        'https://www.salwacollective.co.za',
+        'http://localhost:3000',
+        'http://localhost:5173', // Vite dev server
+        'http://localhost:8080'
+    ];
 
-app.options('*', cors());
+console.log('🌐 Allowed CORS origins:', ALLOWED_ORIGINS);
+
+const corsOptions = {
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps, curl, postman, server-to-server)
+        if (!origin) return callback(null, true);
+
+        // Check if the origin is in the allowed list
+        if (ALLOWED_ORIGINS.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            console.warn(`❌ CORS blocked origin: ${origin}`);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: true, // Allow credentials
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With', 'X-CSRF-Token'],
+    exposedHeaders: ['Content-Range', 'X-Content-Range'],
+    maxAge: 86400 // 24 hours
+};
+
+app.use(cors(corsOptions));
+
+// Handle preflight requests
+app.options('*', cors(corsOptions));
 
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
 app.use((req, res, next) => {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} - Origin: ${req.headers.origin || 'none'}`);
     next();
 });
 
@@ -69,6 +99,7 @@ console.log('Merchant ID:', PAYFAST_CONFIG.merchantId);
 console.log('Sandbox Mode:', PAYFAST_CONFIG.sandbox ? '✅ YES' : '❌ NO');
 console.log('Passphrase:', PAYFAST_CONFIG.passphrase ? '✅ Set' : '❌ Not Set');
 console.log('Firebase:', db ? '✅ Connected' : '❌ Disconnected');
+console.log('CORS Origins:', ALLOWED_ORIGINS.length);
 console.log('='.repeat(60));
 
 // ===== HELPER FUNCTIONS =====
@@ -149,16 +180,39 @@ app.get('/', (req, res) => {
         <head>
             <title>Salwa Collective Payment Server</title>
             <style>
-                body { font-family: Arial, sans-serif; padding: 20px; }
-                .endpoint { background: #f5f5f5; padding: 10px; margin: 5px 0; }
-                .btn { background: #4CAF50; color: white; padding: 10px; margin: 5px; text-decoration: none; display: inline-block; }
+                body { font-family: Arial, sans-serif; padding: 20px; max-width: 1200px; margin: 0 auto; }
+                .endpoint { background: #f5f5f5; padding: 10px; margin: 5px 0; border-radius: 5px; }
+                .btn { background: #4CAF50; color: white; padding: 10px 20px; margin: 10px 5px; text-decoration: none; display: inline-block; border-radius: 5px; border: none; cursor: pointer; }
+                .btn:hover { background: #45a049; }
+                .info-box { background: #e7f3fe; border-left: 6px solid #2196F3; padding: 15px; margin: 20px 0; }
+                .cors-info { background: #fff3cd; border-left: 6px solid #ffc107; padding: 15px; margin: 20px 0; }
             </style>
         </head>
         <body>
             <h1>🎫 Salwa Collective Payment Server</h1>
-            <p><a class="btn" href="/test">Test Dashboard</a></p>
-            <p><a class="btn" href="/health">Health Check</a></p>
-            <p><a class="btn" href="/itn-test">Test ITN</a></p>
+            <div class="info-box">
+                <strong>Server Status:</strong> 🟢 Online<br>
+                <strong>Mode:</strong> ${PAYFAST_CONFIG.sandbox ? 'Sandbox' : 'Production'}<br>
+                <strong>CORS Enabled:</strong> Yes (${ALLOWED_ORIGINS.length} allowed origins)<br>
+                <strong>Firebase:</strong> ${db ? 'Connected' : 'Disconnected'}
+            </div>
+            
+            <div class="cors-info">
+                <strong>CORS Configuration:</strong><br>
+                Credentials allowed: Yes<br>
+                Allowed Origins: ${ALLOWED_ORIGINS.map(origin => `<br>• ${origin}`).join('')}
+            </div>
+            
+            <h2>Quick Links:</h2>
+            <p><a class="btn" href="/test">🧪 Test Dashboard</a></p>
+            <p><a class="btn" href="/health">🩺 Health Check</a></p>
+            <p><a class="btn" href="/itn-test">🔗 Test ITN Endpoint</a></p>
+            
+            <h2>API Endpoints:</h2>
+            <div class="endpoint"><strong>POST /process-payment</strong> - Create new payment</div>
+            <div class="endpoint"><strong>POST /payfast-notify</strong> - PayFast ITN webhook</div>
+            <div class="endpoint"><strong>POST /check-status</strong> - Check booking status</div>
+            <div class="endpoint"><strong>POST /simulate-itn</strong> - Simulate ITN for testing</div>
         </body>
         </html>
     `);
@@ -170,7 +224,12 @@ app.get('/health', (req, res) => {
         status: 'online',
         timestamp: new Date().toISOString(),
         mode: PAYFAST_CONFIG.sandbox ? 'sandbox' : 'production',
-        firebase: db ? 'connected' : 'disconnected'
+        firebase: db ? 'connected' : 'disconnected',
+        cors: {
+            enabled: true,
+            credentialsAllowed: true,
+            allowedOriginsCount: ALLOWED_ORIGINS.length
+        }
     });
 });
 
@@ -182,38 +241,49 @@ app.get('/test', (req, res) => {
         <head>
             <title>PayFast Test Dashboard</title>
             <style>
-                body { font-family: Arial; padding: 20px; }
-                button { padding: 10px; margin: 5px; background: #4CAF50; color: white; border: none; cursor: pointer; }
-                .result { background: #f5f5f5; padding: 10px; margin: 10px 0; }
+                body { font-family: Arial, sans-serif; padding: 20px; max-width: 1200px; margin: 0 auto; }
+                button { padding: 10px 20px; margin: 10px; background: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; }
+                button:hover { background: #45a049; }
+                .result { background: #f5f5f5; padding: 15px; margin: 15px 0; border-radius: 5px; border-left: 4px solid #4CAF50; white-space: pre-wrap; }
+                .error { border-left-color: #f44336; }
+                .success { border-left-color: #4CAF50; }
+                .info { background: #e7f3fe; padding: 15px; margin: 15px 0; border-radius: 5px; border-left: 4px solid #2196F3; }
             </style>
         </head>
         <body>
             <h1>🧪 PayFast Test Dashboard</h1>
             
+            <div class="info">
+                <strong>Current Configuration:</strong><br>
+                Mode: ${PAYFAST_CONFIG.sandbox ? 'Sandbox' : 'Production'}<br>
+                ITN URL: ${getNotifyUrl()}<br>
+                CORS: Enabled (credentials allowed)
+            </div>
+            
             <div>
-                <button onclick="testITN()">Test ITN Endpoint</button>
-                <button onclick="simulateITN()">Simulate ITN</button>
-                <button onclick="createTestPayment()">Create Test Payment</button>
+                <button onclick="testITN()">🔗 Test ITN Endpoint</button>
+                <button onclick="simulateITN()">🔄 Simulate ITN</button>
+                <button onclick="createTestPayment()">💳 Create Test Payment</button>
+                <button onclick="testCORS()">🌐 Test CORS</button>
             </div>
             
             <div id="result"></div>
             
             <script>
                 async function testITN() {
+                    showLoading('Testing ITN endpoint...');
                     try {
                         const res = await fetch('/itn-test');
                         const data = await res.json();
-                        document.getElementById('result').innerHTML = 
-                            '<div class="result"><strong>✅ ITN Test:</strong><br>' + 
-                            JSON.stringify(data, null, 2) + '</div>';
+                        showResult('✅ ITN Test:', data, true);
                     } catch (error) {
-                        document.getElementById('result').innerHTML = 
-                            '<div class="result"><strong>❌ Error:</strong> ' + error + '</div>';
+                        showResult('❌ Error:', error, false);
                     }
                 }
                 
                 async function simulateITN() {
                     const bookingId = 'simulate-' + Date.now();
+                    showLoading('Simulating ITN...');
                     try {
                         // First create the booking in Firestore
                         await fetch('/create-test-booking', {
@@ -229,24 +299,22 @@ app.get('/test', (req, res) => {
                             body: JSON.stringify({ bookingId: bookingId })
                         });
                         const data = await res.json();
-                        document.getElementById('result').innerHTML = 
-                            '<div class="result"><strong>✅ ITN Simulated:</strong><br>' + 
-                            JSON.stringify(data, null, 2) + '</div>';
+                        showResult('✅ ITN Simulated:', data, true);
                     } catch (error) {
-                        document.getElementById('result').innerHTML = 
-                            '<div class="result"><strong>❌ Error:</strong> ' + error + '</div>';
+                        showResult('❌ Error:', error, false);
                     }
                 }
                 
                 async function createTestPayment() {
                     const bookingId = 'test-' + Date.now();
+                    showLoading('Creating payment...');
                     try {
                         const res = await fetch('/process-payment', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 amount: '5.00',
-                                item_name: 'Test Event',
+                                item_name: 'Test Event Ticket',
                                 email_address: 'test@example.com',
                                 booking_id: bookingId,
                                 name_first: 'Test',
@@ -256,15 +324,49 @@ app.get('/test', (req, res) => {
                         const data = await res.json();
                         if (data.success) {
                             window.open(data.redirectUrl, '_blank');
-                            document.getElementById('result').innerHTML = 
-                                '<div class="result"><strong>✅ Payment Created:</strong><br>' + 
-                                'Booking ID: ' + bookingId + '<br>' +
-                                '<a href="' + data.redirectUrl + '" target="_blank">Click to pay</a></div>';
+                            showResult('✅ Payment Created:', {
+                                message: 'Payment link generated successfully!',
+                                bookingId: bookingId,
+                                redirectUrl: data.redirectUrl,
+                                paymentLink: '<a href="' + data.redirectUrl + '" target="_blank">Click here to proceed to payment</a>'
+                            }, true);
+                        } else {
+                            showResult('❌ Payment Failed:', data, false);
                         }
                     } catch (error) {
-                        document.getElementById('result').innerHTML = 
-                            '<div class="result"><strong>❌ Error:</strong> ' + error + '</div>';
+                        showResult('❌ Error:', error, false);
                     }
+                }
+                
+                async function testCORS() {
+                    showLoading('Testing CORS configuration...');
+                    try {
+                        // Test with credentials
+                        const res = await fetch('/health', {
+                            credentials: 'include'
+                        });
+                        const data = await res.json();
+                        showResult('✅ CORS Test with credentials:', {
+                            status: 'CORS with credentials is working!',
+                            origin: window.location.origin,
+                            response: data
+                        }, true);
+                    } catch (error) {
+                        showResult('❌ CORS Error:', error, false);
+                    }
+                }
+                
+                function showLoading(message) {
+                    document.getElementById('result').innerHTML = 
+                        '<div class="result">⏳ ' + message + '</div>';
+                }
+                
+                function showResult(title, data, isSuccess) {
+                    const resultDiv = document.getElementById('result');
+                    const className = isSuccess ? 'success' : 'error';
+                    resultDiv.innerHTML = 
+                        '<div class="result ' + className + '"><strong>' + title + '</strong><br>' + 
+                        JSON.stringify(data, null, 2) + '</div>';
                 }
             </script>
         </body>
@@ -272,7 +374,7 @@ app.get('/test', (req, res) => {
     `);
 });
 
-// 4. CREATE TEST BOOKING (NEW ENDPOINT)
+// 4. CREATE TEST BOOKING
 app.post('/create-test-booking', async (req, res) => {
     try {
         const { bookingId } = req.body;
@@ -287,7 +389,8 @@ app.post('/create-test-booking', async (req, res) => {
             amount: '5.00',
             email: 'test@example.com',
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            itnReceived: false
+            itnReceived: false,
+            testBooking: true
         };
 
         await db.collection('bookings').doc(bookingId).set(bookingData);
@@ -306,6 +409,10 @@ app.get('/itn-test', (req, res) => {
         success: true,
         message: 'ITN endpoint is accessible',
         url: getNotifyUrl(),
+        cors: {
+            origin: req.headers.origin || 'none',
+            credentialsAllowed: true
+        },
         timestamp: new Date().toISOString()
     });
 });
@@ -448,7 +555,7 @@ app.post('/process-payment', async (req, res) => {
     }
 });
 
-// 8. PAYFAST ITN ENDPOINT - FIXED VERSION
+// 8. PAYFAST ITN ENDPOINT
 app.post('/payfast-notify', async (req, res) => {
     console.log('\n' + '='.repeat(70));
     console.log('🟣 PAYFAST ITN RECEIVED');
@@ -609,7 +716,18 @@ app.post('/check-status', async (req, res) => {
     }
 });
 
-// 10. 404 HANDLER
+// 10. GET ORIGIN INFO (for debugging CORS)
+app.get('/origin-info', (req, res) => {
+    res.json({
+        origin: req.headers.origin || 'none',
+        host: req.headers.host,
+        allowedOrigins: ALLOWED_ORIGINS,
+        isOriginAllowed: ALLOWED_ORIGINS.includes(req.headers.origin),
+        credentials: true
+    });
+});
+
+// 11. 404 HANDLER
 app.use((req, res) => {
     res.status(404).json({ error: 'Route not found', path: req.url });
 });
@@ -619,15 +737,18 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`
     🚀 Server started on port ${PORT}
-    🌐 Test Dashboard: http://localhost:${PORT}/test
+    🌐 Home: http://localhost:${PORT}
+    🧪 Test Dashboard: http://localhost:${PORT}/test
     🔗 ITN Endpoint: ${getNotifyUrl()}
-    🧪 Mode: ${PAYFAST_CONFIG.sandbox ? 'SANDBOX' : 'PRODUCTION'}
+    🛡️ Mode: ${PAYFAST_CONFIG.sandbox ? 'SANDBOX' : 'PRODUCTION'}
+    🔐 CORS: Enabled (${ALLOWED_ORIGINS.length} origins, credentials allowed)
     
-    📋 Endpoints:
+    📋 API Endpoints:
     - GET  /              - Home page
     - GET  /test          - Test dashboard
     - GET  /health        - Health check
     - GET  /itn-test      - Test ITN endpoint
+    - GET  /origin-info   - CORS debugging
     - POST /process-payment - Create payment
     - POST /payfast-notify  - ITN webhook
     - POST /check-status   - Check booking status
@@ -635,5 +756,6 @@ app.listen(PORT, () => {
     - POST /create-test-booking - Create test booking
     
     ✅ Ready to receive PayFast ITN notifications!
+    ✅ CORS configured for credentials: 'include'
     `);
 });
