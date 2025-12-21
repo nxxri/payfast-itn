@@ -36,15 +36,15 @@ const corsOptions = {
     maxAge: 86400 // 24 hours
 };
 
-// Apply CORS middleware FIRST - THIS IS CRITICAL
+// Apply CORS middleware FIRST
 app.use(cors(corsOptions));
 
-// Handle preflight requests for ALL routes
-app.options('*', cors(corsOptions));
-
-// Body parsers - IMPORTANT: Must handle both form data and JSON for ITN
+// Body parsers
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
+
+// Add explicit preflight handler
+app.options('*', cors(corsOptions));
 
 // Debug middleware
 app.use((req, res, next) => {
@@ -52,11 +52,11 @@ app.use((req, res, next) => {
     console.log('📦 Request Body:', req.body);
     console.log('📦 Content-Type:', req.headers['content-type']);
     console.log('🌍 Origin:', req.headers.origin);
-    console.log('🌍 User-Agent:', req.headers['user-agent']);
     next();
 });
 
 // ========== FIREBASE INIT ==========
+// FIXED: Removed duplicate declaration - only declare once
 try {
     const firebaseConfig = JSON.parse(process.env.FIREBASE_KEY || '{}');
 
@@ -76,20 +76,13 @@ const db = admin.firestore();
 
 // ========== PAYFAST CONFIG ==========
 const PAYFAST_CONFIG = {
-    merchantId: process.env.PAYFAST_MERCHANT_ID || '10044213',
-    merchantKey: process.env.PAYFAST_MERCHANT_KEY || '9s7vajpkdyycf',
-    passphrase: process.env.PAYFAST_PASSPHRASE || 'salwa20242024',
+    merchantId: process.env.PAYFAST_MERCHANT_ID,
+    merchantKey: process.env.PAYFAST_MERCHANT_KEY,
+    passphrase: process.env.PAYFAST_PASSPHRASE || '',
     sandbox: process.env.PAYFAST_SANDBOX === 'true',
     productionUrl: "https://www.payfast.co.za/eng/process",
     sandboxUrl: "https://sandbox.payfast.co.za/eng/process"
 };
-
-console.log('🔧 PayFast Config:', {
-    merchantId: PAYFAST_CONFIG.merchantId,
-    merchantKey: PAYFAST_CONFIG.merchantKey.substring(0, 4) + '...',
-    passphraseSet: !!PAYFAST_CONFIG.passphrase,
-    sandbox: PAYFAST_CONFIG.sandbox
-});
 
 // ========== HELPER FUNCTIONS ==========
 function convertFirestoreTimestamp(timestamp) {
@@ -141,7 +134,7 @@ function generatePayFastSignature(data, passPhrase = null) {
     }
 
     console.log('🔍 Signature string for MD5:', pfOutput);
-    console.log('🔍 Passphrase used:', passPhrase ? 'YES' : 'NONE');
+    console.log('🔍 Passphrase used:', passPhrase || 'NONE');
 
     return crypto.createHash('md5').update(pfOutput).digest('hex');
 }
@@ -217,21 +210,11 @@ app.post('/process-payment', async (req, res) => {
             });
         }
 
-        // Use Render external URL for notify_url - CRITICAL FOR ITN
-        const renderExternalUrl = process.env.RENDER_EXTERNAL_URL || `https://salwa-payment-backend-1.onrender.com`;
-
-        console.log('🔧 Using external URL:', renderExternalUrl);
+        const renderUrl = process.env.RENDER_EXTERNAL_URL || `https://${req.get('host')}`;
 
         // Build URLs dynamically with booking_id
         const returnUrl = `https://salwacollective.co.za/payment-result.html?pf_status=success&booking_id=${booking_id}`;
         const cancelUrl = `https://salwacollective.co.za/payment-result.html?pf_status=cancelled&booking_id=${booking_id}`;
-
-        // CRITICAL: Use the Render external URL for ITN
-        const notifyUrl = `${renderExternalUrl}/payfast-notify`;
-
-        console.log('🔔 ITN URL:', notifyUrl);
-        console.log('🔔 Return URL:', returnUrl);
-        console.log('🔔 Cancel URL:', cancelUrl);
 
         // SIMPLIFIED payment data - PayFast prefers minimal fields
         const paymentData = {
@@ -239,7 +222,7 @@ app.post('/process-payment', async (req, res) => {
             merchant_key: PAYFAST_CONFIG.merchantKey,
             return_url: returnUrl,
             cancel_url: cancelUrl,
-            notify_url: notifyUrl,
+            notify_url: `${renderUrl}/payfast-notify`,
             name_first: name_first || '',
             name_last: name_last || '',
             email_address: email_address,
@@ -253,9 +236,8 @@ app.post('/process-payment', async (req, res) => {
             custom_int1: ticket_quantity || 1
         };
 
-        // Remove empty values
         Object.keys(paymentData).forEach(key => {
-            if (paymentData[key] === null || paymentData[key] === undefined || paymentData[key] === '') {
+            if (paymentData[key] === null || paymentData[key] === undefined) {
                 delete paymentData[key];
             }
         });
@@ -267,7 +249,6 @@ app.post('/process-payment', async (req, res) => {
 
         console.log('🔍 Generated signature:', signature);
         console.log('🔍 Mode:', PAYFAST_CONFIG.sandbox ? 'SANDBOX' : 'PRODUCTION');
-        console.log('🔍 PayFast URL:', PAYFAST_CONFIG.sandbox ? PAYFAST_CONFIG.sandboxUrl : PAYFAST_CONFIG.productionUrl);
 
         // Store booking with timeout tracking in Firestore
         try {
@@ -294,7 +275,6 @@ app.post('/process-payment', async (req, res) => {
                 paymentStatus: 'PENDING',
                 isPaid: false,
                 itnReceived: false,
-                itnAttempts: 0,
 
                 // Timestamps
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -309,8 +289,7 @@ app.post('/process-payment', async (req, res) => {
                 gatewayData: {
                     merchantId: PAYFAST_CONFIG.merchantId,
                     sandbox: PAYFAST_CONFIG.sandbox,
-                    signature: signature,
-                    notifyUrl: notifyUrl
+                    signature: signature
                 },
 
                 // Additional metadata
@@ -336,9 +315,7 @@ app.post('/process-payment', async (req, res) => {
             success: true,
             redirectUrl: redirectUrl,
             bookingId: booking_id,
-            signature: signature,
-            notifyUrl: notifyUrl,
-            mode: PAYFAST_CONFIG.sandbox ? 'sandbox' : 'production'
+            signature: signature
         });
 
     } catch (error) {
@@ -351,206 +328,6 @@ app.post('/process-payment', async (req, res) => {
     }
 });
 
-// ========== ITN HANDLER (CRITICAL FIX) ==========
-app.post('/payfast-notify', async (req, res) => {
-    console.log('🟣 ========== ITN RECEIVED ==========');
-    console.log('📦 ITN Request Body:', req.body);
-    console.log('📦 Content-Type:', req.headers['content-type']);
-    console.log('🌍 Origin:', req.headers.origin);
-    console.log('🌍 User-Agent:', req.headers['user-agent']);
-    console.log('🌍 IP:', req.ip || req.headers['x-forwarded-for']);
-
-    const data = req.body;
-
-    try {
-        // Log the complete ITN data
-        console.log('🔍 ITN Data received:', JSON.stringify(data, null, 2));
-
-        // IMPORTANT: Check if we have basic data
-        if (!data || Object.keys(data).length === 0) {
-            console.error('🔴 ITN Error: Empty request body');
-            return res.status(400).send('Empty ITN data');
-        }
-
-        const isValidSignature = verifyPayFastSignature(data, PAYFAST_CONFIG.passphrase);
-
-        if (!isValidSignature) {
-            console.error('🔴 Invalid ITN signature');
-            console.error('🔴 Data received:', data);
-
-            // Still try to update Firestore with error
-            if (data.m_payment_id) {
-                try {
-                    await db.collection('bookings').doc(data.m_payment_id).update({
-                        paymentStatus: 'ITN_SIGNATURE_ERROR',
-                        lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
-                        itnError: 'Invalid signature',
-                        itnReceived: true,
-                        itnAttempts: admin.firestore.FieldValue.increment(1)
-                    });
-                    console.log(`✅ Booking ${data.m_payment_id} marked with signature error`);
-                } catch (firestoreErr) {
-                    console.error('Could not update Firestore:', firestoreErr);
-                }
-            }
-
-            return res.status(400).send('Invalid signature');
-        }
-
-        console.log('✅ ITN Signature validated successfully');
-
-        const verifyUrl = PAYFAST_CONFIG.sandbox
-            ? 'https://sandbox.payfast.co.za/eng/query/validate'
-            : 'https://www.payfast.co.za/eng/query/validate';
-
-        console.log(`🔍 Sending validation to: ${verifyUrl}`);
-
-        const response = await axios.post(
-            verifyUrl,
-            querystring.stringify(data),
-            {
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'User-Agent': 'Salwa-Collective-ITN/1.0'
-                },
-                timeout: 10000
-            }
-        );
-
-        console.log(`🔍 PayFast validation response: "${response.data.trim()}"`);
-
-        if (response.data.trim() === 'VALID') {
-            const bookingId = data.m_payment_id;
-            const paymentStatus = data.payment_status?.toUpperCase() || '';
-
-            console.log(`🟢 Valid ITN for booking ${bookingId}, status: ${paymentStatus}`);
-            console.log(`💰 Amount: ${data.amount_gross}, Fee: ${data.amount_fee || 0}`);
-            console.log(`👤 Customer: ${data.name_first || ''} ${data.name_last || ''}`);
-
-            const updateData = {
-                paymentStatus: paymentStatus,
-                payfastPaymentId: data.pf_payment_id || '',
-                amountPaid: parseFloat(data.amount_gross || 0),
-                fee: parseFloat(data.amount_fee || 0),
-                itnReceived: true,
-                itnTimestamp: admin.firestore.FieldValue.serverTimestamp(),
-                payerEmail: data.email_address || '',
-                payerPhone: data.cell_number || '',
-                payerName: `${data.name_first || ''} ${data.name_last || ''}`.trim(),
-                lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
-                itnData: data,
-                itnAttempts: admin.firestore.FieldValue.increment(1)
-            };
-
-            if (paymentStatus === 'COMPLETE') {
-                updateData.status = 'confirmed';
-                updateData.paymentDate = admin.firestore.FieldValue.serverTimestamp();
-                updateData.isPaid = true;
-                console.log(`💰 Payment COMPLETE for booking ${bookingId}`);
-            } else if (paymentStatus === 'CANCELLED' || paymentStatus === 'USER_CANCELLED') {
-                updateData.status = 'cancelled';
-                updateData.isPaid = false;
-                updateData.cancellationReason = 'user_cancelled_on_payfast';
-                updateData.cancelledAt = admin.firestore.FieldValue.serverTimestamp();
-                console.log(`❌ Payment CANCELLED for booking ${bookingId}`);
-            } else if (paymentStatus === 'FAILED') {
-                updateData.status = 'failed';
-                updateData.isPaid = false;
-                updateData.cancellationReason = 'payment_failed';
-                updateData.cancelledAt = admin.firestore.FieldValue.serverTimestamp();
-                console.log(`❌ Payment FAILED for booking ${bookingId}`);
-            } else {
-                updateData.status = paymentStatus.toLowerCase();
-                updateData.isPaid = false;
-                console.log(`ℹ️ Payment ${paymentStatus} for booking ${bookingId}`);
-            }
-
-            try {
-                await db.collection('bookings').doc(bookingId).update(updateData);
-                console.log(`✅ Booking ${bookingId} updated in Firebase with status: ${paymentStatus}`);
-
-                // Also log to a separate ITN log collection for debugging
-                await db.collection('itn_logs').add({
-                    bookingId: bookingId,
-                    paymentStatus: paymentStatus,
-                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
-                    data: data,
-                    isValid: true
-                });
-
-            } catch (firestoreError) {
-                console.error('🔴 Firestore update error:', firestoreError);
-
-                // Try to at least log the ITN
-                await db.collection('itn_logs').add({
-                    bookingId: bookingId,
-                    paymentStatus: paymentStatus,
-                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
-                    data: data,
-                    isValid: true,
-                    firestoreError: firestoreError.message
-                });
-            }
-
-        } else {
-            console.error('🔴 Invalid ITN response from PayFast:', response.data);
-
-            // Log invalid ITN
-            if (data.m_payment_id) {
-                try {
-                    await db.collection('itn_logs').add({
-                        bookingId: data.m_payment_id,
-                        paymentStatus: 'INVALID_RESPONSE',
-                        timestamp: admin.firestore.FieldValue.serverTimestamp(),
-                        data: data,
-                        isValid: false,
-                        response: response.data
-                    });
-                } catch (logError) {
-                    console.error('Could not log ITN:', logError);
-                }
-            }
-        }
-
-        // Always return 200 OK to PayFast
-        res.status(200).send('OK');
-        console.log('✅ ITN processed successfully');
-
-    } catch (err) {
-        console.error('🔴 ITN processing error:', err);
-        console.error('🔴 Error stack:', err.stack);
-
-        // Log the error
-        if (data && data.m_payment_id) {
-            try {
-                await db.collection('bookings').doc(data.m_payment_id).update({
-                    paymentStatus: 'ITN_ERROR',
-                    lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
-                    itnError: err.message,
-                    itnReceived: true,
-                    itnAttempts: admin.firestore.FieldValue.increment(1)
-                });
-
-                await db.collection('itn_logs').add({
-                    bookingId: data.m_payment_id,
-                    paymentStatus: 'ITN_ERROR',
-                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
-                    data: data,
-                    isValid: false,
-                    error: err.message
-                });
-
-                console.log(`✅ Booking ${data.m_payment_id} marked with ITN error`);
-            } catch (firestoreErr) {
-                console.error('Could not update Firestore:', firestoreErr);
-            }
-        }
-
-        // Still return 200 to PayFast to prevent retries
-        res.status(200).send('OK');
-    }
-});
-
 // ========== MANUAL TEST ENDPOINT ==========
 app.get('/manual-test', (req, res) => {
     // Use a test booking ID
@@ -558,14 +335,12 @@ app.get('/manual-test', (req, res) => {
     const returnUrl = `https://salwacollective.co.za/payment-result.html?pf_status=success&booking_id=${testBookingId}`;
     const cancelUrl = `https://salwacollective.co.za/payment-result.html?pf_status=cancelled&booking_id=${testBookingId}`;
 
-    const notifyUrl = `https://salwa-payment-backend-1.onrender.com/payfast-notify`;
-
     const testData = {
         merchant_id: PAYFAST_CONFIG.merchantId,
         merchant_key: PAYFAST_CONFIG.merchantKey,
         return_url: returnUrl,
         cancel_url: cancelUrl,
-        notify_url: notifyUrl,
+        notify_url: 'https://payfast-itn.onrender.com',
         name_first: 'Test',
         name_last: 'User',
         email_address: 'test@example.com',
@@ -591,19 +366,14 @@ app.get('/manual-test', (req, res) => {
                 .url-box { background: white; padding: 15px; border: 1px solid #ddd; border-radius: 5px; word-break: break-all; }
                 .btn { background: #4CAF50; color: white; padding: 12px 24px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }
                 .test-card { background: #e8f5e9; padding: 15px; border-radius: 5px; margin-top: 20px; }
-                .info-box { background: #e3f2fd; padding: 15px; border-radius: 5px; margin-top: 20px; }
             </style>
         </head>
         <body>
             <div class="container">
                 <h1>🧪 PayFast Sandbox Test</h1>
-                <div class="info-box">
-                    <p><strong>Status:</strong> ${PAYFAST_CONFIG.sandbox ? 'SANDBOX 🧪' : 'PRODUCTION 🏢'}</p>
-                    <p><strong>Merchant ID:</strong> ${PAYFAST_CONFIG.merchantId}</p>
-                    <p><strong>Passphrase:</strong> ${PAYFAST_CONFIG.passphrase ? 'SET' : 'NOT SET'}</p>
-                    <p><strong>Signature:</strong> ${signature.substring(0, 20)}...</p>
-                    <p><strong>ITN URL:</strong> ${notifyUrl}</p>
-                </div>
+                <p><strong>Status:</strong> Using merchant ID: ${PAYFAST_CONFIG.merchantId}</p>
+                <p><strong>Passphrase:</strong> ${PAYFAST_CONFIG.passphrase ? 'SET' : 'NOT SET'}</p>
+                <p><strong>Signature:</strong> ${signature.substring(0, 20)}...</p>
                 
                 <h3>Test Payment Link:</h3>
                 <div class="url-box">${testUrl}</div>
@@ -636,6 +406,103 @@ app.get('/manual-test', (req, res) => {
         </body>
         </html>
     `);
+});
+
+// ========== ITN HANDLER ==========
+app.post('/payfast-notify', async (req, res) => {
+    const data = req.body;
+
+    try {
+        console.log('🟣 ITN received:', JSON.stringify(data, null, 2));
+
+        const isValidSignature = verifyPayFastSignature(data, PAYFAST_CONFIG.passphrase);
+
+        if (!isValidSignature) {
+            console.error('🔴 Invalid ITN signature');
+            return res.status(400).send('Invalid signature');
+        }
+
+        const verifyUrl = PAYFAST_CONFIG.sandbox
+            ? 'https://sandbox.payfast.co.za/eng/query/validate'
+            : 'https://www.payfast.co.za/eng/query/validate';
+
+        const response = await axios.post(
+            verifyUrl,
+            querystring.stringify(data),
+            {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'User-Agent': 'Salwa-Collective-ITN/1.0'
+                },
+                timeout: 10000
+            }
+        );
+
+        if (response.data.trim() === 'VALID') {
+            const bookingId = data.m_payment_id;
+            const paymentStatus = data.payment_status?.toUpperCase() || '';
+
+            console.log(`🟢 Valid ITN for booking ${bookingId}, status: ${paymentStatus}`);
+
+            const updateData = {
+                paymentStatus: paymentStatus,
+                payfastPaymentId: data.pf_payment_id,
+                amountPaid: parseFloat(data.amount_gross),
+                fee: parseFloat(data.amount_fee || 0),
+                itnReceived: true,
+                itnTimestamp: admin.firestore.FieldValue.serverTimestamp(),
+                payerEmail: data.email_address,
+                payerPhone: data.cell_number || '',
+                payerName: `${data.name_first || ''} ${data.name_last || ''}`.trim(),
+                lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+                itnData: data
+            };
+
+            if (paymentStatus === 'COMPLETE') {
+                updateData.status = 'confirmed';
+                updateData.paymentDate = admin.firestore.FieldValue.serverTimestamp();
+                updateData.isPaid = true;
+            } else if (paymentStatus === 'CANCELLED' || paymentStatus === 'USER_CANCELLED') {
+                updateData.status = 'cancelled';
+                updateData.isPaid = false;
+                updateData.cancellationReason = 'user_cancelled_on_payfast';
+                updateData.cancelledAt = admin.firestore.FieldValue.serverTimestamp();
+            } else if (paymentStatus === 'FAILED') {
+                updateData.status = 'failed';
+                updateData.isPaid = false;
+                updateData.cancellationReason = 'payment_failed';
+                updateData.cancelledAt = admin.firestore.FieldValue.serverTimestamp();
+            } else {
+                updateData.status = paymentStatus.toLowerCase();
+                updateData.isPaid = false;
+            }
+
+            await db.collection('bookings').doc(bookingId).update(updateData);
+            console.log(`✅ Booking ${bookingId} updated in Firebase`);
+
+        } else {
+            console.error('🔴 Invalid ITN response from PayFast:', response.data);
+        }
+
+        res.status(200).send('OK');
+
+    } catch (err) {
+        console.error('🔴 ITN processing error:', err);
+
+        if (data && data.m_payment_id) {
+            try {
+                await db.collection('bookings').doc(data.m_payment_id).update({
+                    paymentStatus: 'itn_error',
+                    lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+                    itnError: err.message
+                });
+            } catch (firestoreErr) {
+                console.error('Could not update Firestore:', firestoreErr);
+            }
+        }
+
+        res.status(500).send('Server error');
+    }
 });
 
 // ========== CHECK PAYMENT STATUS ==========
@@ -707,7 +574,6 @@ app.post('/check-payment-status', async (req, res) => {
             paymentStatus: bookingData.paymentStatus || 'pending',
             isPaid: bookingData.isPaid || false,
             itnReceived: bookingData.itnReceived || false,
-            itnAttempts: bookingData.itnAttempts || 0,
             ticketNumber: bookingData.ticketNumber || '',
             eventName: bookingData.eventName || bookingData.itemName || '',
             eventDate: bookingData.eventDate || '',
@@ -881,7 +747,6 @@ app.listen(PORT, () => {
     📍 Port: ${PORT}
     🔒 Mode: ${PAYFAST_CONFIG.sandbox ? 'SANDBOX 🧪' : 'PRODUCTION 🏢'}
     🌐 URL: https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost:' + PORT}
-    🔔 ITN Endpoint: https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost:' + PORT}/payfast-notify
     
     📋 Endpoints:
     ├── POST /process-payment    - Create payment links
@@ -898,7 +763,6 @@ app.listen(PORT, () => {
     ├── PAYFAST_MERCHANT_ID=10044213
     ├── PAYFAST_MERCHANT_KEY=9s7vajpkdyycf
     ├── PAYFAST_PASSPHRASE=salwa20242024
-    ├── PAYFAST_SANDBOX=true
-    └── RENDER_EXTERNAL_URL=https://salwa-payment-backend-1.onrender.com
+    └── PAYFAST_SANDBOX=true
     `);
 });
