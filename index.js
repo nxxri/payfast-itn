@@ -45,8 +45,7 @@ const PAYFAST_CONFIG = {
     merchantKey: process.env.PAYFAST_MERCHANT_KEY,
     passphrase: process.env.PAYFAST_PASSPHRASE || '',
     sandbox: process.env.PAYFAST_SANDBOX === 'true',
-    return_url: `https://salwacollective.co.za/payment-result.html?status=success&booking_id=${booking_id}`,
-    cancel_url: `https://salwacollective.co.za/payment-result.html?status=cancelled&booking_id=${booking_id}`,
+    // REMOVE booking_id from here - it will be added dynamically in /process-payment
     productionUrl: "https://www.payfast.co.za/eng/process",
     sandboxUrl: "https://sandbox.payfast.co.za/eng/process"
 };
@@ -179,12 +178,16 @@ app.post('/process-payment', async (req, res) => {
 
         const renderUrl = process.env.RENDER_EXTERNAL_URL || `https://${req.get('host')}`;
 
+        // CORRECTED: Build URLs dynamically with booking_id
+        const returnUrl = `https://salwacollective.co.za/payment-result.html?pf_status=success&booking_id=${booking_id}`;
+        const cancelUrl = `https://salwacollective.co.za/payment-result.html?pf_status=cancelled&booking_id=${booking_id}`;
+
         // SIMPLIFIED payment data - PayFast prefers minimal fields
         const paymentData = {
             merchant_id: PAYFAST_CONFIG.merchantId,
             merchant_key: PAYFAST_CONFIG.merchantKey,
-            return_url: PAYFAST_CONFIG.returnUrl + '&booking_id=' + booking_id,
-            cancel_url: PAYFAST_CONFIG.cancelUrl + '&booking_id=' + booking_id,
+            return_url: returnUrl,
+            cancel_url: cancelUrl,
             notify_url: `${renderUrl}/payfast-notify`,
             name_first: name_first || '',
             name_last: name_last || '',
@@ -293,18 +296,23 @@ app.post('/process-payment', async (req, res) => {
 
 // ========== MANUAL TEST ENDPOINT ==========
 app.get('/manual-test', (req, res) => {
+    // Use a test booking ID
+    const testBookingId = 'test-' + Date.now();
+    const returnUrl = `https://salwacollective.co.za/payment-result.html?pf_status=success&booking_id=${testBookingId}`;
+    const cancelUrl = `https://salwacollective.co.za/payment-result.html?pf_status=cancelled&booking_id=${testBookingId}`;
+
     const testData = {
         merchant_id: PAYFAST_CONFIG.merchantId,
         merchant_key: PAYFAST_CONFIG.merchantKey,
-        return_url: PAYFAST_CONFIG.returnUrl + '&booking_id=test123',
-        cancel_url: PAYFAST_CONFIG.cancelUrl + '&booking_id=test123',
-        notify_url: 'https://payfast-itn.onrender.com/payfast-notify',
+        return_url: returnUrl,
+        cancel_url: cancelUrl,
+        notify_url: 'https://salwa-payment-backend-1.onrender.com/payfast-notify',
         name_first: 'Test',
         name_last: 'User',
         email_address: 'test@example.com',
         amount: '5.00',
         item_name: 'Salwa Collective Test',
-        m_payment_id: 'test-' + Date.now()
+        m_payment_id: testBookingId
     };
 
     const signature = generatePayFastSignature(testData, PAYFAST_CONFIG.passphrase);
