@@ -9,9 +9,6 @@ const cors = require('cors');
 const app = express();
 
 // ===== CORS Configuration =====
-// Replace JUST the CORS section with this:
-
-// ===== CORS Configuration - EXTENDED DEBUG VERSION =====
 const corsOptions = {
     origin: function (origin, callback) {
         console.log('🌍 CORS Origin check:', origin);
@@ -75,6 +72,22 @@ app.use((req, res, next) => {
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Origin, Accept');
     next();
 });
+
+// ========== BODY PARSER MIDDLEWARE ==========
+// CRITICAL: Parse application/x-www-form-urlencoded
+app.use(bodyParser.urlencoded({ extended: true }));
+
+// Parse application/json
+app.use(bodyParser.json());
+
+// Debug middleware - should come AFTER body parsers
+app.use((req, res, next) => {
+    console.log(`📥 ${req.method} ${req.url}`);
+    console.log('📦 Request Body:', req.body);
+    console.log('📦 Content-Type:', req.headers['content-type']);
+    next();
+});
+
 // ========== FIREBASE INIT ==========
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY || '{}');
 admin.initializeApp({
@@ -88,7 +101,6 @@ const PAYFAST_CONFIG = {
     merchantKey: process.env.PAYFAST_MERCHANT_KEY,
     passphrase: process.env.PAYFAST_PASSPHRASE || '',
     sandbox: process.env.PAYFAST_SANDBOX === 'true',
-    // REMOVE booking_id from here - it will be added dynamically in /process-payment
     productionUrl: "https://www.payfast.co.za/eng/process",
     sandboxUrl: "https://sandbox.payfast.co.za/eng/process"
 };
@@ -221,7 +233,7 @@ app.post('/process-payment', async (req, res) => {
 
         const renderUrl = process.env.RENDER_EXTERNAL_URL || `https://${req.get('host')}`;
 
-        // CORRECTED: Build URLs dynamically with booking_id
+        // Build URLs dynamically with booking_id
         const returnUrl = `https://salwacollective.co.za/payment-result.html?pf_status=success&booking_id=${booking_id}`;
         const cancelUrl = `https://salwacollective.co.za/payment-result.html?pf_status=cancelled&booking_id=${booking_id}`;
 
