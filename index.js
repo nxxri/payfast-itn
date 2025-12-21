@@ -4,20 +4,41 @@ const admin = require('firebase-admin');
 const axios = require('axios');
 const querystring = require('querystring');
 const crypto = require('crypto');
+const cors = require('cors');
 
 const app = express();
 
-// ===== CORS =====
-app.use((req, res, next) => {
-    res.header("Access-Control-Allow-Origin", "*");
-    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+// ===== CORS Configuration =====
+const corsOptions = {
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
 
-    if (req.method === "OPTIONS") {
-        return res.sendStatus(200);
-    }
-    next();
-});
+        const allowedOrigins = [
+            "https://salwacollective.co.za",
+            "http://localhost:3000",
+            "http://localhost:5500",
+            "http://127.0.0.1:5500"
+        ];
+
+        if (allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            console.log('Blocked by CORS:', origin);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Origin', 'Accept'],
+    maxAge: 86400 // 24 hours
+};
+
+// Use CORS middleware
+app.use(cors(corsOptions));
+
+// Handle preflight requests globally
+app.options('*', cors(corsOptions));
 
 // ========== MIDDLEWARE ==========
 app.use(bodyParser.urlencoded({ extended: true }));
