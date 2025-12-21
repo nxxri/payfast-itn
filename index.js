@@ -63,38 +63,39 @@ function convertFirestoreTimestamp(timestamp) {
 function generatePayFastSignature(data, passPhrase = null) {
     console.log('🔍 Generating PayFast signature...');
 
-    // Create a copy and remove the signature if it exists
-    const signatureData = { ...data };
-    delete signatureData.signature;
-
-    // Sort keys alphabetically
-    const sortedKeys = Object.keys(signatureData).sort();
-    let pfOutput = '';
-
-    // Build the parameter string
-    for (let key of sortedKeys) {
-        if (signatureData[key] !== undefined && signatureData[key] !== null && signatureData[key] !== '') {
-            // Use encodeURIComponent ONLY - PayFast handles spaces as + automatically
-            const encodedValue = encodeURIComponent(signatureData[key].toString()).replace(/%20/g, '+');
-            pfOutput += `${key}=${encodedValue}&`;
+    // 1. Create a clean copy without empty values or existing signature
+    const cleanData = {};
+    for (const [key, value] of Object.entries(data)) {
+        if (value !== undefined && value !== null && value !== '' && key !== 'signature') {
+            cleanData[key] = value.toString();
         }
     }
 
-    // Remove trailing ampersand
-    if (pfOutput.endsWith('&')) {
-        pfOutput = pfOutput.slice(0, -1);
+    // 2. Sort keys alphabetically (PayFast requirement)
+    const sortedKeys = Object.keys(cleanData).sort();
+
+    // 3. Build the parameter string (CRITICAL: PayFast's exact format)
+    let pfParamString = '';
+    for (const key of sortedKeys) {
+        // Use encodeURIComponent and replace %20 with + (PayFast standard)
+        const encodedValue = encodeURIComponent(cleanData[key]).replace(/%20/g, '+');
+        pfParamString += `${key}=${encodedValue}&`;
     }
 
-    // Add passphrase if provided
-    if (passPhrase !== null && passPhrase !== undefined && passPhrase !== '') {
-        // Passphrase should NOT be URL encoded in the signature string
-        pfOutput += `&passphrase=${encodeURIComponent(passPhrase).replace(/%20/g, '+')}`;
+    // Remove trailing '&'
+    pfParamString = pfParamString.slice(0, -1);
+
+    // 4. Add passphrase if provided (IMPORTANT: Must be encoded and added)
+    if (passPhrase && passPhrase.trim() !== '') {
+        const encodedPassphrase = encodeURIComponent(passPhrase.trim()).replace(/%20/g, '+');
+        pfParamString += `&passphrase=${encodedPassphrase}`;
     }
 
-    console.log('🔍 Raw string for MD5:', pfOutput);
+    console.log('🔍 String for MD5 (exact):', pfParamString);
+    console.log('🔍 Passphrase used:', passPhrase || 'NONE');
 
-    // Calculate MD5 hash
-    const signature = crypto.createHash('md5').update(pfOutput).digest('hex');
+    // 5. Calculate MD5 hash
+    const signature = crypto.createHash('md5').update(pfParamString).digest('hex');
     console.log('🔍 Generated signature:', signature);
 
     return signature;
@@ -104,43 +105,45 @@ function verifyPayFastSignature(data, passphrase = '') {
     console.log('🔍 Verifying PayFast signature...');
 
     const submittedSignature = data.signature;
-    const signatureData = { ...data };
-    delete signatureData.signature;
+    const cleanData = { ...data };
+    delete cleanData.signature;
 
-    // Sort keys alphabetically
-    const sortedKeys = Object.keys(signatureData).sort();
-    let pfParamString = '';
-
-    // Build the parameter string exactly like PayFast does
-    for (const key of sortedKeys) {
-        if (signatureData[key] !== undefined && signatureData[key] !== null && signatureData[key] !== '') {
-            // Use encodeURIComponent ONLY - PayFast handles spaces as + automatically
-            const encodedValue = encodeURIComponent(signatureData[key].toString()).replace(/%20/g, '+');
-            pfParamString += `${key}=${encodedValue}&`;
+    // Remove empty values
+    for (const key in cleanData) {
+        if (cleanData[key] === undefined || cleanData[key] === null || cleanData[key] === '') {
+            delete cleanData[key];
         }
     }
 
-    // Remove trailing ampersand
-    if (pfParamString.endsWith('&')) {
-        pfParamString = pfParamString.slice(0, -1);
+    // Sort alphabetically
+    const sortedKeys = Object.keys(cleanData).sort();
+
+    // Build parameter string
+    let pfParamString = '';
+    for (const key of sortedKeys) {
+        const encodedValue = encodeURIComponent(cleanData[key].toString()).replace(/%20/g, '+');
+        pfParamString += `${key}=${encodedValue}&`;
     }
 
-    // Add passphrase if provided
-    if (passphrase !== null && passphrase !== undefined && passphrase !== '') {
-        pfParamString += `&passphrase=${encodeURIComponent(passphrase).replace(/%20/g, '+')}`;
+    pfParamString = pfParamString.slice(0, -1);
+
+    // Add passphrase
+    if (passphrase && passphrase.trim() !== '') {
+        const encodedPassphrase = encodeURIComponent(passphrase.trim()).replace(/%20/g, '+');
+        pfParamString += `&passphrase=${encodedPassphrase}`;
     }
 
-    console.log('🔍 Verification string for MD5:', pfParamString);
+    console.log('🔍 Verification string:', pfParamString);
 
     const calculatedSignature = crypto.createHash('md5').update(pfParamString).digest('hex');
 
-    console.log('🔍 Signature comparison:');
-    console.log('Submitted:', submittedSignature);
-    console.log('Calculated:', calculatedSignature);
-    console.log('Match?', calculatedSignature === submittedSignature);
+    console.log('🔍 Submitted:', submittedSignature);
+    console.log('🔍 Calculated:', calculatedSignature);
+    console.log('🔍 Match?', calculatedSignature === submittedSignature);
 
     return calculatedSignature === submittedSignature;
-}// ========== SIMPLIFIED PROCESS PAYMENT ==========
+
+ }// ========== SIMPLIFIED PROCESS PAYMENT ==========
 app.post('/process-payment', async (req, res) => {
     try {
         console.log('🔵 Payment request received:', req.body);
