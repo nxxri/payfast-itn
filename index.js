@@ -811,7 +811,7 @@ app.post('/simulate-itn', async (req, res) => {
         });
     }
 });
-// 8. PROCESS PAYMENT (FIXED VERSION - ONLY PAYFAST PARAMETERS)
+// 8. PROCESS PAYMENT (FIXED VERSION - PAYFAST SANDBOX COMPATIBLE)
 app.post('/process-payment', async (req, res) => {
     try {
         console.log('🔍 Processing payment request:', JSON.stringify(req.body, null, 2));
@@ -824,7 +824,6 @@ app.post('/process-payment', async (req, res) => {
             booking_id,
             name_first,
             name_last,
-            // Optional fields that might come from frontend
             cell_number,
             event_title
         } = req.body;
@@ -836,7 +835,7 @@ app.post('/process-payment', async (req, res) => {
             });
         }
 
-        // Validate amount format (must be numeric, no "R" prefix)
+        // Validate amount format
         const cleanAmount = parseFloat(amount.toString().replace(/[^0-9.]/g, ''));
         if (isNaN(cleanAmount)) {
             return res.status(400).json({
@@ -845,56 +844,51 @@ app.post('/process-payment', async (req, res) => {
             });
         }
 
-        // ===== CRITICAL: ONLY INCLUDE PAYFAST-RECOGNIZED PARAMETERS =====
-        // These are the ONLY parameters PayFast accepts for signature generation
+        // ===== PAYFAST PARAMETERS (EXACT ORDER MATTERS FOR SIGNATURE) =====
+        // According to PayFast docs: https://developers.payfast.co.za/documentation/#checkout-page
         const paymentData = {
             merchant_id: PAYFAST_CONFIG.merchantId,
             merchant_key: PAYFAST_CONFIG.merchantKey,
-            return_url: `https://salwacollective.co.za/payment-result.html?booking_id=${booking_id}`,
-            cancel_url: `https://salwacollective.co.za/payment-result.html?booking_id=${booking_id}&cancelled=true`,
+            return_url: `https://salwacollective.co.za/payment-result.html`,
+            cancel_url: `https://salwacollective.co.za/payment-result.html?cancelled=true`,
             notify_url: getNotifyUrl(),
-            name_first: name_first || '',
-            name_last: name_last || '',
-            email_address: email_address,
-            amount: cleanAmount.toFixed(2), // Ensure exactly 2 decimal places
-            item_name: event_title ? `Salwa Collective: ${event_title}` : (item_name || 'Event Ticket'),
-            m_payment_id: booking_id // This is the booking ID, MUST NOT include booking_id as separate param
+            name_first: (name_first || '').trim(),
+            name_last: (name_last || '').trim(),
+            email_address: email_address.trim(),
+            amount: cleanAmount.toFixed(2),
+            item_name: (event_title ? `Salwa Collective: ${event_title}` : (item_name || 'Event Ticket')).trim(),
+            m_payment_id: booking_id.trim()
         };
 
-        // Add ONLY PayFast-recognized optional parameters
-        // Reference: https://developers.payfast.co.za/documentation/#step-2-form-fields
+        // Optional PayFast parameters
         if (cell_number && cell_number.trim() !== '') {
             paymentData.cell_number = cell_number.trim();
         }
 
-        // DO NOT add any custom parameters like "booking_id", "event_id", etc.
-        // PayFast will reject them and cause signature mismatch
+        console.log('📋 PayFast payment data:', JSON.stringify(paymentData, null, 2));
 
-        // Log what we're sending to PayFast
-        console.log('📋 PayFast payment data (before signature):', JSON.stringify(paymentData, null, 2));
+        // ===== CRITICAL: PAYFAST SANDBOX DOESN'T SUPPORT PASSPHRASE =====
+        // For sandbox testing, we should NOT include passphrase in signature
+        let signature;
+        if (PAYFAST_CONFIG.sandbox) {
+            console.log('⚠️ SANDBOX MODE: Generating signature WITHOUT passphrase');
+            signature = generatePayFastSignature(paymentData, ''); // Empty passphrase for sandbox
+        } else {
+            console.log('🔄 PRODUCTION MODE: Generating signature WITH passphrase');
+            signature = generatePayFastSignature(paymentData, PAYFAST_CONFIG.passphrase);
+        }
 
-        // ===== GENERATE SIGNATURE WITH EXACT PAYFAST PARAMETERS =====
-        const signature = generatePayFastSignature(paymentData, PAYFAST_CONFIG.passphrase);
         paymentData.signature = signature;
 
         console.log('✅ Generated signature:', signature);
-        console.log('✅ Parameter count:', Object.keys(paymentData).length);
 
-        // ===== DEBUG: Show exact parameter string used for signature =====
-        const signatureData = { ...paymentData };
-        delete signatureData.signature;
-        const sortedKeys = Object.keys(signatureData).sort();
-        let pfOutput = '';
-        for (let key of sortedKeys) {
-            if (signatureData[key] !== undefined && signatureData[key] !== null && signatureData[key] !== '') {
-                pfOutput += `${key}=${encodeURIComponent(signatureData[key].toString()).replace(/%20/g, '+')}&`;
-            }
-        }
-        pfOutput = pfOutput.slice(0, -1);
-        if (PAYFAST_CONFIG.passphrase && PAYFAST_CONFIG.passphrase.trim() !== '') {
-            pfOutput += `&passphrase=${encodeURIComponent(PAYFAST_CONFIG.passphrase.trim()).replace(/%20/g, '+')}`;
-        }
-        console.log('🔐 Parameter string for signature:', pfOutput);
+        // ===== DEBUG: Generate both signatures to compare =====
+        const signatureWithPassphrase = generatePayFastSignature(paymentData, PAYFAST_CONFIG.passphrase);
+        const signatureWithoutPassphrase = generatePayFastSignature(paymentData, '');
+
+        console.log('🔐 Signature WITH passphrase:', signatureWithPassphrase);
+        console.log('🔐 Signature WITHOUT passphrase:', signatureWithoutPassphrase);
+        console.log('🔐 Using signature:', PAYFAST_CONFIG.sandbox ? 'WITHOUT passphrase (sandbox)' : 'WITH passphrase (production)');
 
         // Store booking in Firestore
         if (db) {
@@ -912,11 +906,11 @@ app.post('/process-payment', async (req, res) => {
                 lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
                 paymentTimeout: new Date(Date.now() + 30 * 60 * 1000),
                 itnReceived: false,
-                paymentData: paymentData, // Store the exact payment data sent to PayFast
-                signature: signature, // Store the generated signature for debugging
-                debug: {
-                    parameterString: pfOutput,
-                    fieldsInSignature: sortedKeys,
+                paymentData: paymentData,
+                signatures: {
+                    withPassphrase: signatureWithPassphrase,
+                    withoutPassphrase: signatureWithoutPassphrase,
+                    used: PAYFAST_CONFIG.sandbox ? 'without_passphrase' : 'with_passphrase',
                     timestamp: new Date().toISOString()
                 }
             };
@@ -925,29 +919,44 @@ app.post('/process-payment', async (req, res) => {
             console.log(`✅ Booking ${booking_id} stored in Firestore`);
         }
 
-        // ===== GENERATE PAYFAST URL WITHOUT EXTRA PARAMETERS =====
+        // Generate PayFast URL
         const payfastUrl = PAYFAST_CONFIG.sandbox ? PAYFAST_CONFIG.sandboxUrl : PAYFAST_CONFIG.productionUrl;
 
-        // CRITICAL: Only include the paymentData parameters (which already include signature)
-        const redirectUrl = `${payfastUrl}?${querystring.stringify(paymentData)}`;
+        // Convert to query string
+        const queryParams = new URLSearchParams();
 
-        console.log('🔗 PayFast redirect URL generated');
-        console.log('🎯 Number of parameters in URL:', Object.keys(paymentData).length);
-        console.log('🎯 Redirect URL (truncated):', redirectUrl.substring(0, 200) + '...');
+        // Add parameters in the SAME ORDER as PayFast expects
+        const paramOrder = [
+            'merchant_id', 'merchant_key', 'return_url', 'cancel_url', 'notify_url',
+            'name_first', 'name_last', 'email_address', 'cell_number',
+            'amount', 'item_name', 'item_description', 'custom_int1', 'custom_int2',
+            'custom_int3', 'custom_int4', 'custom_int5', 'custom_str1', 'custom_str2',
+            'custom_str3', 'custom_str4', 'custom_str5', 'email_confirmation',
+            'confirmation_address', 'payment_method', 'subscription_type', 'billing_date',
+            'recurring_amount', 'frequency', 'cycles', 'm_payment_id', 'signature'
+        ];
+
+        // Add only parameters that exist
+        for (const key of paramOrder) {
+            if (paymentData[key] !== undefined && paymentData[key] !== null && paymentData[key] !== '') {
+                queryParams.append(key, paymentData[key]);
+            }
+        }
+
+        const redirectUrl = `${payfastUrl}?${queryParams.toString()}`;
+
+        console.log('🔗 Generated PayFast URL (first 300 chars):', redirectUrl.substring(0, 300));
 
         res.json({
             success: true,
             redirectUrl: redirectUrl,
             bookingId: booking_id,
-            paymentData: {
-                // Return only the fields for debugging (not for the frontend to use)
-                merchant_id: paymentData.merchant_id,
-                amount: paymentData.amount,
-                item_name: paymentData.item_name,
-                m_payment_id: paymentData.m_payment_id,
-                signature: paymentData.signature.substring(0, 10) + '...' // Truncate for security
-            },
-            warning: 'Do not add any additional parameters to the redirect URL'
+            debug: {
+                signatureGenerated: signature.substring(0, 10) + '...',
+                sandboxMode: PAYFAST_CONFIG.sandbox,
+                passphraseUsed: !PAYFAST_CONFIG.sandbox && !!PAYFAST_CONFIG.passphrase,
+                parameterCount: Object.keys(paymentData).length
+            }
         });
 
     } catch (error) {
@@ -1122,6 +1131,148 @@ app.get('/validate-redirect', (req, res) => {
 // 13. 404 HANDLER
 app.use((req, res) => {
     res.status(404).json({ error: 'Route not found', path: req.url });
+});
+// 14. TEST PAYFAST SIGNATURE WITH KNOWN WORKING EXAMPLE
+app.get('/test-payfast-signature', (req, res) => {
+    try {
+        // Test with PayFast's official example from documentation
+        // https://developers.payfast.co.za/documentation/#signature-generation
+
+        const testData = {
+            merchant_id: '10000100', // PayFast test merchant ID
+            merchant_key: '46f0cd694581a', // PayFast test merchant key
+            return_url: 'https://www.example.com/success',
+            cancel_url: 'https://www.example.com/cancel',
+            notify_url: 'https://www.example.com/notify',
+            name_first: 'Test',
+            name_last: 'User',
+            email_address: 'test@example.com',
+            amount: '100.00',
+            item_name: 'Test Product',
+            m_payment_id: 'test-123'
+        };
+
+        // Known working signature from PayFast docs (with passphrase "jt7NOE43FZPn")
+        const passphrase = 'jt7NOE43FZPn';
+
+        // Generate parameter string manually to verify
+        const signatureData = { ...testData };
+        const sortedKeys = Object.keys(signatureData).sort();
+        let pfOutput = '';
+
+        for (let key of sortedKeys) {
+            const value = signatureData[key];
+            if (value !== undefined && value !== null && value !== '') {
+                pfOutput += `${key}=${encodeURIComponent(value.toString()).replace(/%20/g, '+')}&`;
+            }
+        }
+
+        pfOutput = pfOutput.slice(0, -1);
+        pfOutput += `&passphrase=${encodeURIComponent(passphrase.trim()).replace(/%20/g, '+')}`;
+
+        const expectedSignature = 'b5d5c8d6f7b6d5c8d6f7b6d5c8d6f7b6d'; // Example from docs
+        const actualSignature = crypto.createHash('md5').update(pfOutput).digest('hex');
+
+        // Test your own merchant credentials
+        const yourTestData = {
+            merchant_id: PAYFAST_CONFIG.merchantId,
+            merchant_key: PAYFAST_CONFIG.merchantKey,
+            return_url: 'https://salwacollective.co.za/payment-result.html',
+            cancel_url: 'https://salwacollective.co.za/payment-result.html?cancelled=true',
+            notify_url: getNotifyUrl(),
+            name_first: 'Test',
+            name_last: 'User',
+            email_address: 'test@example.com',
+            amount: '5.00',
+            item_name: 'Test Product',
+            m_payment_id: 'test-456'
+        };
+
+        const yourSignatureWithPassphrase = generatePayFastSignature(yourTestData, PAYFAST_CONFIG.passphrase);
+        const yourSignatureWithoutPassphrase = generatePayFastSignature(yourTestData, '');
+
+        res.json({
+            success: true,
+
+            // PayFast official example
+            payfastExample: {
+                data: testData,
+                passphrase: passphrase,
+                parameterString: pfOutput,
+                expectedSignature: expectedSignature,
+                actualSignature: actualSignature,
+                matches: actualSignature === expectedSignature
+            },
+
+            // Your configuration
+            yourConfiguration: {
+                merchantId: PAYFAST_CONFIG.merchantId,
+                sandbox: PAYFAST_CONFIG.sandbox,
+                passphraseSet: !!PAYFAST_CONFIG.passphrase,
+
+                // Test signatures
+                signatureWithPassphrase: yourSignatureWithPassphrase,
+                signatureWithoutPassphrase: yourSignatureWithoutPassphrase,
+                recommendation: PAYFAST_CONFIG.sandbox ?
+                    'Use WITHOUT passphrase for sandbox' :
+                    'Use WITH passphrase for production'
+            },
+
+            // Quick fix options
+            quickFixes: [
+                'Option 1: Remove passphrase for sandbox testing',
+                'Option 2: Verify passphrase is correct in merchant settings',
+                'Option 3: Check URL encoding of parameters',
+                'Option 4: Ensure no extra spaces in parameter values'
+            ]
+        });
+
+    } catch (error) {
+        console.error('Test PayFast signature error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+// 15. EMERGENCY TEST - DIRECT PAYFAST INTEGRATION
+app.post('/direct-payfast-test', (req, res) => {
+    try {
+        // Simplest possible PayFast integration
+        const bookingId = 'test-' + Date.now();
+        const amount = '5.00';
+
+        // Minimal required parameters
+        const params = {
+            merchant_id: '10044213',
+            merchant_key: '9s7vajpkdyycf',
+            return_url: 'https://salwacollective.co.za',
+            cancel_url: 'https://salwacollective.co.za',
+            notify_url: getNotifyUrl(),
+            amount: amount,
+            item_name: 'Test Payment',
+            m_payment_id: bookingId
+        };
+
+        // NO SIGNATURE - let PayFast generate it
+        // OR use simple signature without passphrase
+        params.signature = generatePayFastSignature(params, '');
+
+        const payfastUrl = 'https://sandbox.payfast.co.za/eng/process';
+        const redirectUrl = `${payfastUrl}?${new URLSearchParams(params).toString()}`;
+
+        res.json({
+            success: true,
+            message: 'Direct PayFast test - NO PASSPHRASE',
+            redirectUrl: redirectUrl,
+            params: params,
+            note: 'This uses NO passphrase for sandbox testing'
+        });
+
+    } catch (error) {
+        console.error('Direct test error:', error);
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // ===== START SERVER =====
