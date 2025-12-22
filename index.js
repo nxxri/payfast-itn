@@ -166,9 +166,7 @@ app.post('/payfast-notify', async (req, res) => {
     console.log('\n' + '='.repeat(70));
     console.log('🟣 PAYFAST ITN RECEIVED (NO CORS)');
     console.log('='.repeat(70));
-    console.log('Payload for signature:', data);
-    console.log('Calculated signature:', generatePayFastSignature(data, PAYFAST_CONFIG.passphrase));
-    console.log('Submitted signature:', data.signature);
+
 
     const data = req.body;
     console.log('ITN Data:', JSON.stringify(data, null, 2));
