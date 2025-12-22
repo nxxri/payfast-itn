@@ -811,8 +811,7 @@ app.post('/simulate-itn', async (req, res) => {
         });
     }
 });
-
-// 8. PROCESS PAYMENT (FIXED VERSION)
+// 8. PROCESS PAYMENT (FIXED VERSION - ONLY PAYFAST PARAMETERS)
 app.post('/process-payment', async (req, res) => {
     try {
         console.log('🔍 Processing payment request:', JSON.stringify(req.body, null, 2));
@@ -827,9 +826,7 @@ app.post('/process-payment', async (req, res) => {
             name_last,
             // Optional fields that might come from frontend
             cell_number,
-            event_title,
-            ticket_quantity,
-            event_id
+            event_title
         } = req.body;
 
         if (!amount || !email_address || !booking_id) {
@@ -848,7 +845,8 @@ app.post('/process-payment', async (req, res) => {
             });
         }
 
-        // Create the complete PayFast payment data object
+        // ===== CRITICAL: ONLY INCLUDE PAYFAST-RECOGNIZED PARAMETERS =====
+        // These are the ONLY parameters PayFast accepts for signature generation
         const paymentData = {
             merchant_id: PAYFAST_CONFIG.merchantId,
             merchant_key: PAYFAST_CONFIG.merchantKey,
@@ -860,24 +858,43 @@ app.post('/process-payment', async (req, res) => {
             email_address: email_address,
             amount: cleanAmount.toFixed(2), // Ensure exactly 2 decimal places
             item_name: event_title ? `Salwa Collective: ${event_title}` : (item_name || 'Event Ticket'),
-            m_payment_id: booking_id
+            m_payment_id: booking_id // This is the booking ID, MUST NOT include booking_id as separate param
         };
 
-        // Add optional fields ONLY if they exist and are not empty
-        // These fields MUST be included in the signature if sent to PayFast
+        // Add ONLY PayFast-recognized optional parameters
+        // Reference: https://developers.payfast.co.za/documentation/#step-2-form-fields
         if (cell_number && cell_number.trim() !== '') {
             paymentData.cell_number = cell_number.trim();
         }
 
-        // Log what we're sending to PayFast
-        console.log('📋 PayFast payment data (before signature):', paymentData);
+        // DO NOT add any custom parameters like "booking_id", "event_id", etc.
+        // PayFast will reject them and cause signature mismatch
 
-        // Generate signature with ALL fields that will be sent
+        // Log what we're sending to PayFast
+        console.log('📋 PayFast payment data (before signature):', JSON.stringify(paymentData, null, 2));
+
+        // ===== GENERATE SIGNATURE WITH EXACT PAYFAST PARAMETERS =====
         const signature = generatePayFastSignature(paymentData, PAYFAST_CONFIG.passphrase);
         paymentData.signature = signature;
 
         console.log('✅ Generated signature:', signature);
-        console.log('📦 Full payment data to send:', paymentData);
+        console.log('✅ Parameter count:', Object.keys(paymentData).length);
+
+        // ===== DEBUG: Show exact parameter string used for signature =====
+        const signatureData = { ...paymentData };
+        delete signatureData.signature;
+        const sortedKeys = Object.keys(signatureData).sort();
+        let pfOutput = '';
+        for (let key of sortedKeys) {
+            if (signatureData[key] !== undefined && signatureData[key] !== null && signatureData[key] !== '') {
+                pfOutput += `${key}=${encodeURIComponent(signatureData[key].toString()).replace(/%20/g, '+')}&`;
+            }
+        }
+        pfOutput = pfOutput.slice(0, -1);
+        if (PAYFAST_CONFIG.passphrase && PAYFAST_CONFIG.passphrase.trim() !== '') {
+            pfOutput += `&passphrase=${encodeURIComponent(PAYFAST_CONFIG.passphrase.trim()).replace(/%20/g, '+')}`;
+        }
+        console.log('🔐 Parameter string for signature:', pfOutput);
 
         // Store booking in Firestore
         if (db) {
@@ -897,26 +914,40 @@ app.post('/process-payment', async (req, res) => {
                 itnReceived: false,
                 paymentData: paymentData, // Store the exact payment data sent to PayFast
                 signature: signature, // Store the generated signature for debugging
-                ticketQuantity: ticket_quantity || 1,
-                eventId: event_id || ''
+                debug: {
+                    parameterString: pfOutput,
+                    fieldsInSignature: sortedKeys,
+                    timestamp: new Date().toISOString()
+                }
             };
 
             await db.collection('bookings').doc(booking_id).set(bookingData);
-            console.log(`✅ Booking ${booking_id} stored in Firestore with payment data`);
+            console.log(`✅ Booking ${booking_id} stored in Firestore`);
         }
 
-        // Generate the PayFast URL
+        // ===== GENERATE PAYFAST URL WITHOUT EXTRA PARAMETERS =====
         const payfastUrl = PAYFAST_CONFIG.sandbox ? PAYFAST_CONFIG.sandboxUrl : PAYFAST_CONFIG.productionUrl;
+
+        // CRITICAL: Only include the paymentData parameters (which already include signature)
         const redirectUrl = `${payfastUrl}?${querystring.stringify(paymentData)}`;
 
         console.log('🔗 PayFast redirect URL generated');
-        console.log('🎯 Redirecting to:', redirectUrl);
+        console.log('🎯 Number of parameters in URL:', Object.keys(paymentData).length);
+        console.log('🎯 Redirect URL (truncated):', redirectUrl.substring(0, 200) + '...');
 
         res.json({
             success: true,
             redirectUrl: redirectUrl,
             bookingId: booking_id,
-            paymentData: paymentData // For debugging
+            paymentData: {
+                // Return only the fields for debugging (not for the frontend to use)
+                merchant_id: paymentData.merchant_id,
+                amount: paymentData.amount,
+                item_name: paymentData.item_name,
+                m_payment_id: paymentData.m_payment_id,
+                signature: paymentData.signature.substring(0, 10) + '...' // Truncate for security
+            },
+            warning: 'Do not add any additional parameters to the redirect URL'
         });
 
     } catch (error) {
@@ -929,7 +960,6 @@ app.post('/process-payment', async (req, res) => {
         });
     }
 });
-
 // 9. CHECK STATUS
 app.post('/check-status', async (req, res) => {
     try {
@@ -983,53 +1013,71 @@ app.get('/origin-info', (req, res) => {
     });
 });
 
-// 11. DEBUG SIGNATURE ENDPOINT
+// 11. DEBUG SIGNATURE ENDPOINT - UPDATED
 app.post('/debug-signature', (req, res) => {
     try {
-        // Test data matching what would come from frontend
+        // Exact parameters PayFast expects (from your error)
         const testData = {
-            merchant_id: PAYFAST_CONFIG.merchantId,
+            merchant_id: '10044213', // Your actual merchant ID
             merchant_key: PAYFAST_CONFIG.merchantKey,
-            return_url: `https://salwacollective.co.za/payment-result.html?booking_id=test-123`,
-            cancel_url: `https://salwacollective.co.za/payment-result.html?booking_id=test-123&cancelled=true`,
+            return_url: 'https://salwacollective.co.za/payment-result.html?booking_id=test123',
+            cancel_url: 'https://salwacollective.co.za/payment-result.html?booking_id=test123&cancelled=true',
             notify_url: getNotifyUrl(),
             name_first: 'John',
             name_last: 'Doe',
             email_address: 'john@example.com',
             amount: '5.00',
             item_name: 'Test Event Ticket',
-            m_payment_id: 'test-123',
-            cell_number: '0831234567'
+            m_payment_id: 'test123' // This is the booking ID
+            // DO NOT include booking_id as separate parameter!
         };
 
-        const signature = generatePayFastSignature(testData, PAYFAST_CONFIG.passphrase);
-
-        // Generate parameter string to see exactly what's being hashed
+        // Generate parameter string exactly as PayFast expects
         const signatureData = { ...testData };
-        delete signatureData.signature;
-
         const sortedKeys = Object.keys(signatureData).sort();
         let pfOutput = '';
 
+        console.log('🔍 Debug - Sorted keys:', sortedKeys);
+
         for (let key of sortedKeys) {
-            if (signatureData[key] !== undefined && signatureData[key] !== null && signatureData[key] !== '') {
-                pfOutput += `${key}=${encodeURIComponent(signatureData[key].toString()).replace(/%20/g, '+')}&`;
+            const value = signatureData[key];
+            if (value !== undefined && value !== null && value !== '') {
+                const encodedValue = encodeURIComponent(value.toString()).replace(/%20/g, '+');
+                pfOutput += `${key}=${encodedValue}&`;
+                console.log(`  ${key}: "${value}" -> "${encodedValue}"`);
             }
         }
 
-        pfOutput = pfOutput.slice(0, -1);
+        pfOutput = pfOutput.slice(0, -1); // Remove trailing &
 
         if (PAYFAST_CONFIG.passphrase && PAYFAST_CONFIG.passphrase.trim() !== '') {
-            pfOutput += `&passphrase=${encodeURIComponent(PAYFAST_CONFIG.passphrase.trim()).replace(/%20/g, '+')}`;
+            const encodedPassphrase = encodeURIComponent(PAYFAST_CONFIG.passphrase.trim()).replace(/%20/g, '+');
+            pfOutput += `&passphrase=${encodedPassphrase}`;
+            console.log(`  passphrase: "${PAYFAST_CONFIG.passphrase}" -> "${encodedPassphrase}"`);
         }
+
+        const signature = crypto.createHash('md5').update(pfOutput).digest('hex');
+
+        // Also show what a WRONG signature would look like with extra booking_id parameter
+        const wrongData = { ...testData, booking_id: 'test123' }; // Adding extra parameter
+        const wrongSignature = generatePayFastSignature(wrongData, PAYFAST_CONFIG.passphrase);
 
         res.json({
             success: true,
             testData: testData,
             signature: signature,
             parameterString: pfOutput,
+            md5Hash: signature,
             passphraseUsed: !!PAYFAST_CONFIG.passphrase,
-            fieldsInSignature: sortedKeys
+            fieldsInSignature: sortedKeys,
+
+            // Show what happens with wrong parameters
+            warning: 'DO NOT include extra parameters like booking_id',
+            wrongExample: {
+                withExtraParam: wrongData,
+                wrongSignature: wrongSignature,
+                note: 'This will cause signature mismatch!'
+            }
         });
     } catch (error) {
         console.error('Debug signature error:', error);
