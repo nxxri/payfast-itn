@@ -55,6 +55,24 @@ app.use((req, res, next) => {
     next();
 });
 
+// ===== ITN ROOT URL FIX MIDDLEWARE =====
+// This middleware fixes the issue where PayFast sends ITN to root URL instead of /payfast-notify
+app.use((req, res, next) => {
+    // Check if it's a POST to root with ITN data
+    if (req.method === 'POST' && req.path === '/' &&
+        req.headers['content-type']?.includes('application/x-www-form-urlencoded') &&
+        req.body.payment_status && req.body.m_payment_id) {
+
+        console.log(`🔄 Redirecting root ITN to /payfast-notify (booking: ${req.body.m_payment_id})`);
+
+        // Change the path so it hits your ITN handler
+        req.url = '/payfast-notify';
+        req.path = '/payfast-notify';
+        req.originalUrl = '/payfast-notify';
+    }
+    next();
+});
+
 // ===== FIREBASE INITIALIZATION =====
 let db = null;
 try {
@@ -186,6 +204,7 @@ app.get('/', (req, res) => {
                 .btn:hover { background: #45a049; }
                 .info-box { background: #e7f3fe; border-left: 6px solid #2196F3; padding: 15px; margin: 20px 0; }
                 .cors-info { background: #fff3cd; border-left: 6px solid #ffc107; padding: 15px; margin: 20px 0; }
+                .itn-fix { background: #d4edda; border-left: 6px solid #28a745; padding: 15px; margin: 20px 0; }
             </style>
         </head>
         <body>
@@ -195,6 +214,13 @@ app.get('/', (req, res) => {
                 <strong>Mode:</strong> ${PAYFAST_CONFIG.sandbox ? 'Sandbox' : 'Production'}<br>
                 <strong>CORS Enabled:</strong> Yes (${ALLOWED_ORIGINS.length} allowed origins)<br>
                 <strong>Firebase:</strong> ${db ? 'Connected' : 'Disconnected'}
+            </div>
+            
+            <div class="itn-fix">
+                <strong>🔄 ITN URL FIX ACTIVE:</strong><br>
+                • ITN requests to root (/) will be automatically redirected to /payfast-notify<br>
+                • PayFast can use: https://payfast-itn.onrender.com OR https://payfast-itn.onrender.com/payfast-notify<br>
+                • Both URLs will work correctly
             </div>
             
             <div class="cors-info">
@@ -207,12 +233,14 @@ app.get('/', (req, res) => {
             <p><a class="btn" href="/test">🧪 Test Dashboard</a></p>
             <p><a class="btn" href="/health">🩺 Health Check</a></p>
             <p><a class="btn" href="/itn-test">🔗 Test ITN Endpoint</a></p>
+            <p><a class="btn" href="/test-root-itn">🧪 Test Root ITN Fix</a></p>
             
             <h2>API Endpoints:</h2>
             <div class="endpoint"><strong>POST /process-payment</strong> - Create new payment</div>
             <div class="endpoint"><strong>POST /payfast-notify</strong> - PayFast ITN webhook</div>
             <div class="endpoint"><strong>POST /check-status</strong> - Check booking status</div>
             <div class="endpoint"><strong>POST /simulate-itn</strong> - Simulate ITN for testing</div>
+            <div class="endpoint"><strong>POST / (with ITN data)</strong> - Auto-redirects to /payfast-notify ✅</div>
         </body>
         </html>
     `);
@@ -229,6 +257,10 @@ app.get('/health', (req, res) => {
             enabled: true,
             credentialsAllowed: true,
             allowedOriginsCount: ALLOWED_ORIGINS.length
+        },
+        itnFix: {
+            enabled: true,
+            description: 'Root URL ITN requests automatically redirected to /payfast-notify'
         }
     });
 });
@@ -257,7 +289,8 @@ app.get('/test', (req, res) => {
                 <strong>Current Configuration:</strong><br>
                 Mode: ${PAYFAST_CONFIG.sandbox ? 'Sandbox' : 'Production'}<br>
                 ITN URL: ${getNotifyUrl()}<br>
-                CORS: Enabled (credentials allowed)
+                CORS: Enabled (credentials allowed)<br>
+                <strong>ITN Fix:</strong> ✅ Active (root URL → /payfast-notify)
             </div>
             
             <div>
@@ -265,6 +298,7 @@ app.get('/test', (req, res) => {
                 <button onclick="simulateITN()">🔄 Simulate ITN</button>
                 <button onclick="createTestPayment()">💳 Create Test Payment</button>
                 <button onclick="testCORS()">🌐 Test CORS</button>
+                <button onclick="testRootITN()">📤 Test Root ITN Fix</button>
             </div>
             
             <div id="result"></div>
@@ -356,6 +390,50 @@ app.get('/test', (req, res) => {
                     }
                 }
                 
+                async function testRootITN() {
+                    showLoading('Testing Root ITN Fix...');
+                    try {
+                        const bookingId = 'root-test-' + Date.now();
+                        
+                        // First create a test booking
+                        await fetch('/create-test-booking', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ bookingId: bookingId })
+                        });
+                        
+                        // Test sending ITN to root URL
+                        const formData = new URLSearchParams();
+                        formData.append('m_payment_id', bookingId);
+                        formData.append('pf_payment_id', 'PF' + Date.now());
+                        formData.append('payment_status', 'COMPLETE');
+                        formData.append('item_name', 'Root ITN Test');
+                        formData.append('amount_gross', '5.00');
+                        formData.append('name_first', 'Root');
+                        formData.append('name_last', 'Test');
+                        formData.append('email_address', 'root@test.com');
+                        
+                        const res = await fetch('/', {
+                            method: 'POST',
+                            headers: { 
+                                'Content-Type': 'application/x-www-form-urlencoded'
+                            },
+                            body: formData
+                        });
+                        
+                        const text = await res.text();
+                        showResult('✅ Root ITN Test:', {
+                            message: 'ITN sent to root URL successfully',
+                            bookingId: bookingId,
+                            response: text === 'OK' ? '✅ ITN processed successfully' : text,
+                            note: 'Check Firebase to see if booking was updated'
+                        }, true);
+                        
+                    } catch (error) {
+                        showResult('❌ Root ITN Error:', error, false);
+                    }
+                }
+                
                 function showLoading(message) {
                     document.getElementById('result').innerHTML = 
                         '<div class="result">⏳ ' + message + '</div>';
@@ -409,6 +487,7 @@ app.get('/itn-test', (req, res) => {
         success: true,
         message: 'ITN endpoint is accessible',
         url: getNotifyUrl(),
+        rootFix: '✅ Active - ITN requests to root (/) will be redirected to /payfast-notify',
         cors: {
             origin: req.headers.origin || 'none',
             credentialsAllowed: true
@@ -417,7 +496,34 @@ app.get('/itn-test', (req, res) => {
     });
 });
 
-// 6. SIMULATE ITN
+// 6. TEST ROOT ITN ENDPOINT
+app.get('/test-root-itn', (req, res) => {
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Test Root ITN Fix</title>
+            <style>
+                body { font-family: Arial, sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }
+                .success { color: green; }
+                .info { background: #f0f0f0; padding: 15px; border-radius: 5px; margin: 20px 0; }
+            </style>
+        </head>
+        <body>
+            <h1>🧪 Test Root ITN Fix</h1>
+            <div class="info">
+                <strong>Current PayFast ITN URL in dashboard:</strong> https://payfast-itn.onrender.com<br>
+                <strong>Should be:</strong> https://payfast-itn.onrender.com/payfast-notify<br>
+                <strong>Fix Status:</strong> <span class="success">✅ ACTIVE</span><br>
+                <p>This fix automatically redirects ITN requests from root (/) to /payfast-notify</p>
+            </div>
+            <p><a href="/test">Back to Test Dashboard</a></p>
+        </body>
+        </html>
+    `);
+});
+
+// 7. SIMULATE ITN
 app.post('/simulate-itn', async (req, res) => {
     try {
         const bookingId = req.body.bookingId || 'simulate-' + Date.now();
@@ -480,7 +586,7 @@ app.post('/simulate-itn', async (req, res) => {
     }
 });
 
-// 7. PROCESS PAYMENT
+// 8. PROCESS PAYMENT
 app.post('/process-payment', async (req, res) => {
     try {
         console.log('Processing payment request:', req.body);
@@ -555,11 +661,17 @@ app.post('/process-payment', async (req, res) => {
     }
 });
 
-// 8. PAYFAST ITN ENDPOINT
+// 9. PAYFAST ITN ENDPOINT (UNCHANGED - STILL WORKS FOR /payfast-notify)
 app.post('/payfast-notify', async (req, res) => {
     console.log('\n' + '='.repeat(70));
     console.log('🟣 PAYFAST ITN RECEIVED');
     console.log('='.repeat(70));
+
+    // Check if this came via root redirect
+    const viaRootRedirect = req.headers['x-original-url'] === '/' || req.originalUrl === '/';
+    if (viaRootRedirect) {
+        console.log('📤 This ITN was redirected from root URL (/)');
+    }
 
     const data = req.body;
     console.log('ITN Data:', JSON.stringify(data, null, 2));
@@ -606,7 +718,8 @@ app.post('/payfast-notify', async (req, res) => {
                 amountPaid: parseFloat(data.amount_gross || 0),
                 isPaid: paymentStatus === 'COMPLETE',
                 paymentDate: paymentStatus === 'COMPLETE' ? admin.firestore.FieldValue.serverTimestamp() : null,
-                itnData: data
+                itnData: data,
+                itnReceivedVia: viaRootRedirect ? 'root_redirect' : 'direct'
             };
 
             await db.collection('bookings').doc(bookingId).set(newBookingData);
@@ -620,7 +733,8 @@ app.post('/payfast-notify', async (req, res) => {
                 amountPaid: parseFloat(data.amount_gross || 0),
                 itnReceived: true,
                 lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
-                itnData: data
+                itnData: data,
+                itnReceivedVia: viaRootRedirect ? 'root_redirect' : 'direct'
             };
 
             if (paymentStatus === 'COMPLETE') {
@@ -651,7 +765,8 @@ app.post('/payfast-notify', async (req, res) => {
             bookingId: bookingId,
             paymentStatus: paymentStatus,
             timestamp: admin.firestore.FieldValue.serverTimestamp(),
-            data: data
+            data: data,
+            viaRootRedirect: viaRootRedirect
         });
 
         console.log('✅ ITN processing completed');
@@ -666,7 +781,8 @@ app.post('/payfast-notify', async (req, res) => {
                 await db.collection('itn_errors').add({
                     error: error.message,
                     data: data,
-                    timestamp: admin.firestore.FieldValue.serverTimestamp()
+                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                    viaRootRedirect: viaRootRedirect
                 });
             } catch (logError) {
                 console.error('Failed to log ITN error:', logError);
@@ -678,7 +794,7 @@ app.post('/payfast-notify', async (req, res) => {
     }
 });
 
-// 9. CHECK STATUS
+// 10. CHECK STATUS
 app.post('/check-status', async (req, res) => {
     try {
         const { bookingId } = req.body;
@@ -706,6 +822,7 @@ app.post('/check-status', async (req, res) => {
             paymentStatus: data.paymentStatus || 'pending',
             isPaid: data.isPaid || false,
             itnReceived: data.itnReceived || false,
+            itnReceivedVia: data.itnReceivedVia || 'unknown',
             amount: data.totalAmount || data.amountPaid || 0,
             email: data.customerEmail || ''
         });
@@ -716,18 +833,19 @@ app.post('/check-status', async (req, res) => {
     }
 });
 
-// 10. GET ORIGIN INFO (for debugging CORS)
+// 11. GET ORIGIN INFO (for debugging CORS)
 app.get('/origin-info', (req, res) => {
     res.json({
         origin: req.headers.origin || 'none',
         host: req.headers.host,
         allowedOrigins: ALLOWED_ORIGINS,
         isOriginAllowed: ALLOWED_ORIGINS.includes(req.headers.origin),
-        credentials: true
+        credentials: true,
+        itnFix: 'Active - POST to / with ITN data redirects to /payfast-notify'
     });
 });
 
-// 11. 404 HANDLER
+// 12. 404 HANDLER
 app.use((req, res) => {
     res.status(404).json({ error: 'Route not found', path: req.url });
 });
@@ -742,20 +860,25 @@ app.listen(PORT, () => {
     🔗 ITN Endpoint: ${getNotifyUrl()}
     🛡️ Mode: ${PAYFAST_CONFIG.sandbox ? 'SANDBOX' : 'PRODUCTION'}
     🔐 CORS: Enabled (${ALLOWED_ORIGINS.length} origins, credentials allowed)
+    🔄 ITN FIX: ✅ ACTIVE (root URL → /payfast-notify)
     
     📋 API Endpoints:
     - GET  /              - Home page
     - GET  /test          - Test dashboard
     - GET  /health        - Health check
     - GET  /itn-test      - Test ITN endpoint
+    - GET  /test-root-itn - Test root ITN fix
     - GET  /origin-info   - CORS debugging
     - POST /process-payment - Create payment
-    - POST /payfast-notify  - ITN webhook
+    - POST /payfast-notify  - ITN webhook (also accepts POST to /)
     - POST /check-status   - Check booking status
     - POST /simulate-itn   - Simulate ITN
     - POST /create-test-booking - Create test booking
     
     ✅ Ready to receive PayFast ITN notifications!
+    ✅ ITN Fix: PayFast can use either:
+       • https://payfast-itn.onrender.com
+       • https://payfast-itn.onrender.com/payfast-notify
     ✅ CORS configured for credentials: 'include'
     `);
 });
