@@ -93,38 +93,41 @@ console.log('CORS Origins:', ALLOWED_ORIGINS.length);
 console.log('='.repeat(60));
 
 // ===== HELPER FUNCTIONS =====
-function generatePayFastSignature(data, passPhrase = null, isItnData = false) {
-    const signatureData = { ...data };
+function generatePayFastSignature(data, passPhrase = null) {
+    // CRITICAL: PayFast 'process' page requires this EXACT field order
+    const fieldOrder = [
+        'merchant_id', 'merchant_key', 'return_url', 'cancel_url', 'notify_url',
+        'name_first', 'name_last', 'email_address', 'cell_number',
+        'm_payment_id', 'amount', 'item_name', 'item_description',
+        'custom_int1', 'custom_int2', 'custom_int3', 'custom_int4', 'custom_int5',
+        'custom_str1', 'custom_str2', 'custom_str3', 'custom_str4', 'custom_str5',
+        'email_confirmation', 'confirmation_address', 'payment_method'
+    ];
 
-    // 🚨 FIXED: Remove merchant_key from signature calculation
-    delete signatureData.signature;
-    delete signatureData.merchant_key; // 🚨 REQUIRED FIX
-
-    const sortedKeys = Object.keys(signatureData).sort();
     let pfOutput = '';
 
-    for (let key of sortedKeys) {
-        if (signatureData[key] !== undefined && signatureData[key] !== null && signatureData[key] !== '') {
-            if (isItnData) {
-                // ✅ For ITN data: use raw value (already encoded by PayFast)
-                pfOutput += `${key}=${signatureData[key].toString()}&`;
-            } else {
-                // ✅ For outgoing data: encode it
-                pfOutput += `${key}=${encodeURIComponent(signatureData[key].toString())}&`;
+    // Iterate through the strict order
+    for (let key of fieldOrder) {
+        if (data[key] !== undefined && data[key] !== null && data[key].toString().trim() !== '') {
+            // PayFast hashing EXCLUDES 'signature' and 'merchant_key' from the MD5 string
+            if (key !== 'signature' && key !== 'merchant_key') {
+                // IMPORTANT: For this integration, PayFast requires '+' for spaces
+                const val = encodeURIComponent(data[key].toString().trim()).replace(/%20/g, '+');
+                pfOutput += `${key}=${val}&`;
             }
         }
     }
 
+    // Remove the final &
     pfOutput = pfOutput.slice(0, -1);
 
+    // Append the passphrase from your screenshot (Salwa20242024)
     if (passPhrase && passPhrase.trim() !== '') {
-        // Always encode passphrase
-        pfOutput += `&passphrase=${encodeURIComponent(passPhrase.trim())}`;
+        pfOutput += `&passphrase=${encodeURIComponent(passPhrase.trim()).replace(/%20/g, '+')}`;
     }
 
     return crypto.createHash('md5').update(pfOutput).digest('hex');
 }
-
 function verifyPayFastSignature(data, passphrase = '') {
     const submittedSignature = data.signature;
     if (!submittedSignature) {
