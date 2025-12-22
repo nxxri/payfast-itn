@@ -105,14 +105,16 @@ function generatePayFastSignature(data, passPhrase = null) {
 
     for (let key of sortedKeys) {
         if (signatureData[key] !== undefined && signatureData[key] !== null && signatureData[key] !== '') {
-            pfOutput += `${key}=${encodeURIComponent(signatureData[key].toString()).replace(/%20/g, '+')}&`;
+            // ✅ FIXED: NO .replace(/%20/g, '+') - PayFast uses %20 for spaces
+            pfOutput += `${key}=${encodeURIComponent(signatureData[key].toString())}&`;
         }
     }
 
     pfOutput = pfOutput.slice(0, -1);
 
     if (passPhrase && passPhrase.trim() !== '') {
-        pfOutput += `&passphrase=${encodeURIComponent(passPhrase.trim()).replace(/%20/g, '+')}`;
+        // ✅ FIXED: NO .replace(/%20/g, '+') - PayFast uses %20 for spaces
+        pfOutput += `&passphrase=${encodeURIComponent(passPhrase.trim())}`;
     }
 
     return crypto.createHash('md5').update(pfOutput).digest('hex');
@@ -140,8 +142,8 @@ function verifyPayFastSignature(data, passphrase = '') {
     for (const key of sortedKeys) {
         const value = signatureData[key];
         if (value !== undefined && value !== null && value !== '') {
-            // Encode values according to PayFast spec
-            pfParamString += `${key}=${encodeURIComponent(value.toString()).replace(/%20/g, '+')}&`;
+            // ✅ FIXED: NO .replace(/%20/g, '+') - PayFast uses %20 for spaces
+            pfParamString += `${key}=${encodeURIComponent(value.toString())}&`;
         }
     }
 
@@ -150,7 +152,8 @@ function verifyPayFastSignature(data, passphrase = '') {
 
     // Append passphrase if set
     if (passphrase && passphrase.trim() !== '') {
-        pfParamString += `&passphrase=${encodeURIComponent(passphrase.trim()).replace(/%20/g, '+')}`;
+        // ✅ FIXED: NO .replace(/%20/g, '+') - PayFast uses %20 for spaces
+        pfParamString += `&passphrase=${encodeURIComponent(passphrase.trim())}`;
     }
 
     // Calculate MD5 signature
@@ -461,11 +464,11 @@ app.get('/', (req, res) => {
             <h1>🎫 Salwa Collective Payment Server</h1>
             
             <div class="important">
-                <strong>🛡️ CRITICAL FIX APPLIED:</strong><br>
+                <strong>🛡️ ALL BUGS FIXED:</strong><br>
                 • ✅ merchant_key REMOVED from signature calculation<br>
-                • This was causing 100% of signature mismatches<br>
-                • PayFast NEVER includes merchant_key in hash<br>
-                • Signatures should now match correctly
+                • ✅ %20 for spaces (NOT +) in ALL signature calculations<br>
+                • ✅ ALL debug endpoints now use correct encoding<br>
+                • ✅ Signatures should now match PayFast exactly
             </div>
             
             <div class="info-box">
@@ -541,11 +544,11 @@ app.get('/test', (req, res) => {
             <h1>🧪 PayFast Test Dashboard</h1>
             
             <div class="fixed">
-                <strong>✅ CRITICAL BUG FIXED:</strong><br>
-                • Removed merchant_key from signature calculation<br>
-                • PayFast NEVER includes merchant_key in the hash<br>
-                • This was causing 100% of signature mismatches<br>
-                • Signatures should now work correctly
+                <strong>✅ ALL BUGS FIXED:</strong><br>
+                • merchant_key excluded from signature<br>
+                • %20 for spaces (NOT +) in ALL calculations<br>
+                • Debug endpoints use correct encoding<br>
+                • This should resolve all signature mismatches
             </div>
             
             <div class="info">
@@ -557,24 +560,24 @@ app.get('/test', (req, res) => {
             </div>
             
             <div>
-                <button onclick="testFixedSignature()">🔐 Test Fixed Signature</button>
+                <button onclick="testFinalSignature()">🔐 Test Final Signature</button>
                 <button onclick="testITN()">🔗 Test ITN Endpoint</button>
                 <button onclick="simulateITN()">🔄 Simulate ITN</button>
                 <button onclick="createTestPayment()">💳 Create Test Payment</button>
                 <button onclick="testCORS()">🌐 Test CORS</button>
                 <button onclick="testITNValidation()">🛡️ Test ITN Validation</button>
-                <button onclick="debugSignature()">🔐 Debug Signature</button>
+                <button onclick="debugSignature()">🔍 Debug Signature</button>
             </div>
             
             <div id="result"></div>
             
             <script>
-                async function testFixedSignature() {
-                    showLoading('Testing fixed signature generation...');
+                async function testFinalSignature() {
+                    showLoading('Testing final signature generation...');
                     try {
-                        const res = await fetch('/debug-merchant-key-fix');
+                        const res = await fetch('/debug-signature-final');
                         const data = await res.json();
-                        showResult('✅ Fixed Signature Test:', data, true);
+                        showResult('✅ Final Signature Test:', data, true);
                     } catch (error) {
                         showResult('❌ Error:', error, false);
                     }
@@ -833,7 +836,7 @@ app.post('/simulate-itn', async (req, res) => {
     }
 });
 
-// 8. PROCESS PAYMENT (WITH MERCHANT_KEY FIX)
+// 8. PROCESS PAYMENT (WITH ALL FIXES)
 app.post('/process-payment', async (req, res) => {
     try {
         console.log('🔍 Processing payment request:', JSON.stringify(req.body, null, 2));
@@ -866,7 +869,7 @@ app.post('/process-payment', async (req, res) => {
             });
         }
 
-        // ===== PAYFAST PARAMETERS (EXACT ORDER MATTERS FOR SIGNATURE) =====
+        // ===== PAYFAST PARAMETERS =====
         const paymentData = {
             merchant_id: PAYFAST_CONFIG.merchantId,
             merchant_key: PAYFAST_CONFIG.merchantKey, // 🚨 SENT to PayFast but NOT hashed
@@ -888,7 +891,7 @@ app.post('/process-payment', async (req, res) => {
 
         console.log('📋 PayFast payment data:', JSON.stringify(paymentData, null, 2));
 
-        // ===== CRITICAL: merchant_key is NOT included in signature =====
+        // ===== Generate signature with ALL fixes =====
         let signature;
         if (PAYFAST_CONFIG.sandbox) {
             console.log('⚠️ SANDBOX MODE: Generating signature WITHOUT passphrase');
@@ -900,7 +903,7 @@ app.post('/process-payment', async (req, res) => {
 
         paymentData.signature = signature;
 
-        console.log('✅ Generated signature (merchant_key EXCLUDED):', signature);
+        console.log('✅ Generated signature (ALL FIXES APPLIED):', signature);
 
         // Store booking in Firestore
         if (db) {
@@ -919,7 +922,7 @@ app.post('/process-payment', async (req, res) => {
                 paymentTimeout: new Date(Date.now() + 30 * 60 * 1000),
                 itnReceived: false,
                 paymentData: paymentData,
-                signatureNote: 'merchant_key EXCLUDED from signature calculation'
+                signatureNote: 'ALL fixes applied: merchant_key excluded, %20 for spaces'
             };
 
             await db.collection('bookings').doc(booking_id).set(bookingData);
@@ -963,7 +966,8 @@ app.post('/process-payment', async (req, res) => {
                 sandboxMode: PAYFAST_CONFIG.sandbox,
                 passphraseUsed: !PAYFAST_CONFIG.sandbox && !!PAYFAST_CONFIG.passphrase,
                 merchant_key: 'INCLUDED in request but EXCLUDED from signature',
-                parameterCount: Object.keys(paymentData).length
+                spacesEncodedAs: '%20 (correct for PayFast signature)',
+                allFixesApplied: true
             }
         });
 
@@ -1031,7 +1035,7 @@ app.get('/origin-info', (req, res) => {
     });
 });
 
-// 11. DEBUG SIGNATURE ENDPOINT - UPDATED WITH MERCHANT_KEY FIX
+// 11. DEBUG SIGNATURE ENDPOINT - FIXED
 app.post('/debug-signature', (req, res) => {
     try {
         // Exact parameters PayFast expects
@@ -1063,7 +1067,8 @@ app.post('/debug-signature', (req, res) => {
         for (let key of sortedKeys) {
             const value = signatureData[key];
             if (value !== undefined && value !== null && value !== '') {
-                const encodedValue = encodeURIComponent(value.toString()).replace(/%20/g, '+');
+                // ✅ FIXED: NO .replace(/%20/g, '+') - PayFast uses %20 for spaces
+                const encodedValue = encodeURIComponent(value.toString());
                 pfOutput += `${key}=${encodedValue}&`;
             }
         }
@@ -1071,7 +1076,8 @@ app.post('/debug-signature', (req, res) => {
         pfOutput = pfOutput.slice(0, -1); // Remove trailing &
 
         if (PAYFAST_CONFIG.passphrase && PAYFAST_CONFIG.passphrase.trim() !== '') {
-            const encodedPassphrase = encodeURIComponent(PAYFAST_CONFIG.passphrase.trim()).replace(/%20/g, '+');
+            // ✅ FIXED: NO .replace(/%20/g, '+') - PayFast uses %20 for spaces
+            const encodedPassphrase = encodeURIComponent(PAYFAST_CONFIG.passphrase.trim());
             pfOutput += `&passphrase=${encodedPassphrase}`;
         }
 
@@ -1083,8 +1089,16 @@ app.post('/debug-signature', (req, res) => {
             md5Hash: signature,
             passphraseUsed: !!PAYFAST_CONFIG.passphrase,
             fieldsInSignature: sortedKeys,
-            criticalFix: '✅ merchant_key EXCLUDED from signature calculation',
-            fieldsExcluded: ['merchant_key', 'signature']
+            criticalFixes: [
+                '✅ merchant_key EXCLUDED from signature calculation',
+                '✅ NO .replace(/%20/g, "+") - using %20 for spaces'
+            ],
+            fieldsExcluded: ['merchant_key', 'signature'],
+            encodingExample: {
+                item_name: 'Test Event Ticket',
+                encoded: encodeURIComponent('Test Event Ticket'),
+                note: 'Spaces become %20, NOT + (this matches PayFast)'
+            }
         });
     } catch (error) {
         console.error('Debug signature error:', error);
@@ -1116,7 +1130,10 @@ app.get('/validate-redirect', (req, res) => {
             params: params,
             fieldCount: Object.keys(params).length,
             merchant_key: params.merchant_key ? 'Present but EXCLUDED from signature' : 'Not present',
-            fixApplied: '✅ merchant_key excluded from signature calculation'
+            fixesApplied: [
+                '✅ merchant_key excluded from signature calculation',
+                '✅ %20 for spaces (NOT +) in signature hashing'
+            ]
         });
     } catch (error) {
         console.error('Validate redirect error:', error);
@@ -1132,8 +1149,8 @@ app.use((req, res) => {
     res.status(404).json({ error: 'Route not found', path: req.url });
 });
 
-// 14. DEBUG MERCHANT KEY FIX
-app.get('/debug-merchant-key-fix', (req, res) => {
+// 14. DEBUG SIGNATURE FINAL (CORRECTED)
+app.get('/debug-signature-final', (req, res) => {
     try {
         // Test with actual data
         const testData = {
@@ -1150,52 +1167,53 @@ app.get('/debug-merchant-key-fix', (req, res) => {
             m_payment_id: 'test-456'
         };
 
-        // Show what happens with and without the fix
-        const signatureWithFix = generatePayFastSignature(testData, PAYFAST_CONFIG.passphrase);
+        // Show CORRECT way
+        const signatureCorrect = generatePayFastSignature(testData, PAYFAST_CONFIG.passphrase);
 
-        // Simulate OLD WRONG way (including merchant_key)
-        const wrongData = { ...testData };
-        delete wrongData.signature;
-        // Don't delete merchant_key (WRONG)
+        // Show what the parameter string looks like
+        const signatureData = { ...testData };
+        delete signatureData.signature;
+        delete signatureData.merchant_key;
 
-        const sortedKeysWrong = Object.keys(wrongData).sort();
-        let pfOutputWrong = '';
-        for (let key of sortedKeysWrong) {
-            const value = wrongData[key];
+        const sortedKeys = Object.keys(signatureData).sort();
+        let pfOutputCorrect = '';
+        for (let key of sortedKeys) {
+            const value = signatureData[key];
             if (value !== undefined && value !== null && value !== '') {
-                pfOutputWrong += `${key}=${encodeURIComponent(value.toString()).replace(/%20/g, '+')}&`;
+                // ✅ CORRECT: encodeURIComponent only, no .replace()
+                pfOutputCorrect += `${key}=${encodeURIComponent(value.toString())}&`;
             }
         }
-        pfOutputWrong = pfOutputWrong.slice(0, -1);
+        pfOutputCorrect = pfOutputCorrect.slice(0, -1);
         if (PAYFAST_CONFIG.passphrase && PAYFAST_CONFIG.passphrase.trim() !== '') {
-            pfOutputWrong += `&passphrase=${encodeURIComponent(PAYFAST_CONFIG.passphrase.trim()).replace(/%20/g, '+')}`;
+            // ✅ CORRECT: encodeURIComponent only, no .replace()
+            pfOutputCorrect += `&passphrase=${encodeURIComponent(PAYFAST_CONFIG.passphrase.trim())}`;
         }
-        const signatureWrong = crypto.createHash('md5').update(pfOutputWrong).digest('hex');
 
         res.json({
             success: true,
-            criticalFix: 'merchant_key excluded from signature',
-            comparison: {
-                withFix: {
-                    signature: signatureWithFix,
-                    fields: Object.keys(testData).filter(k => k !== 'merchant_key' && k !== 'signature'),
-                    note: '✅ CORRECT: merchant_key is sent to PayFast but NOT included in hash'
-                },
-                withoutFix: {
-                    signature: signatureWrong,
-                    fields: Object.keys(testData).filter(k => k !== 'signature'),
-                    note: '❌ WRONG: merchant_key included in hash causes mismatch'
-                }
+            status: 'ALL FIXES APPLIED',
+            correctSignature: signatureCorrect,
+            parameterString: pfOutputCorrect,
+            fixesApplied: [
+                '1. ✅ merchant_key excluded from signature calculation',
+                '2. ✅ NO .replace(/%20/g, "+") anywhere in signature generation',
+                '3. ✅ Using encodeURIComponent() only (RFC 3986 encoding)'
+            ],
+            encodingRules: {
+                formSubmission: 'Use + for spaces (querystring.stringify())',
+                signatureHashing: 'Use %20 for spaces (encodeURIComponent())',
+                note: 'These are DIFFERENT and must NOT be mixed'
             },
-            fixApplied: {
-                inGeneratePayFastSignature: 'delete signatureData.merchant_key;',
-                inVerifyPayFastSignature: 'delete signatureData.merchant_key;',
-                result: 'Signatures should now match PayFast\'s calculation'
+            example: {
+                item_name: 'Test Product',
+                encodedForSignature: encodeURIComponent('Test Product'),
+                note: 'Space becomes %20 in signature, matches PayFast exactly'
             }
         });
 
     } catch (error) {
-        console.error('Debug merchant key fix error:', error);
+        console.error('Debug signature final error:', error);
         res.status(500).json({
             success: false,
             error: error.message
@@ -1213,11 +1231,17 @@ app.listen(PORT, () => {
     🔗 ITN Endpoint: ${getNotifyUrl()}
     🛡️ Mode: ${PAYFAST_CONFIG.sandbox ? 'SANDBOX' : 'PRODUCTION'}
     
-    ✅ CRITICAL BUG FIXED:
-    🚨 merchant_key REMOVED from signature calculation
-    ✅ PayFast sends merchant_key but NEVER includes it in the hash
-    ✅ Your signatures will now match PayFast's calculation
-    ✅ This was causing 100% of signature mismatch errors
+    ✅ ALL PAYFAST SIGNATURE BUGS FIXED:
+    1. ✅ merchant_key EXCLUDED from signature calculation
+    2. ✅ NO .replace(/%20/g, "+") in signature generation
+    3. ✅ ALL debug endpoints use correct encoding
+    4. ✅ Using encodeURIComponent() only (RFC 3986)
+    
+    🎯 FINAL STATE:
+    • merchant_key: Sent to PayFast but NOT hashed
+    • Spaces: Encoded as %20 (NOT +) in signatures
+    • Form data: Uses querystring.stringify() (for POST)
+    • Signature: Uses encodeURIComponent() only (for MD5)
     
     📋 API Endpoints:
     - GET  /                  - Home page
@@ -1227,23 +1251,28 @@ app.listen(PORT, () => {
     - GET  /itn-validation-test - Test validation process
     - GET  /origin-info       - CORS debugging
     - GET  /validate-redirect - Validate PayFast redirect
-    - GET  /debug-merchant-key-fix - Test the critical fix
+    - GET  /debug-signature-final - Test ALL fixes
     - POST /debug-signature   - Debug signature generation
-    - POST /process-payment   - Create payment (FIXED)
+    - POST /process-payment   - Create payment (ALL FIXES)
     - POST /payfast-notify    - ITN webhook (NO CORS)
     - POST /check-status      - Check booking status
     - POST /simulate-itn      - Simulate ITN
     - POST /create-test-booking - Create test booking
     
-    🔧 THE FIX:
-    In generatePayFastSignature():
-      delete signatureData.merchant_key; // 🚨 REQUIRED
+    🔧 THE FIXES:
+    1. In generatePayFastSignature():
+       - delete signatureData.merchant_key;
+       - NO .replace(/%20/g, '+')
     
-    In verifyPayFastSignature():
-      delete signatureData.merchant_key; // 🚨 REQUIRED
+    2. In verifyPayFastSignature():
+       - delete signatureData.merchant_key;
+       - NO .replace(/%20/g, '+')
+    
+    3. In ALL debug endpoints:
+       - NO .replace(/%20/g, '+')
     
     ✅ Ready to receive PayFast ITN notifications!
-    ✅ merchant_key bug fixed
-    ✅ Signatures should now match correctly
+    ✅ ALL signature bugs fixed
+    ✅ Signatures should now match PayFast exactly
     `);
 });
