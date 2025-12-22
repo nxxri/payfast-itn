@@ -5,8 +5,12 @@ const axios = require('axios');
 const querystring = require('querystring');
 const crypto = require('crypto');
 const cors = require('cors');
-
 const app = express();
+app.use(cors({
+    origin: ['https://payfast-itn.onrender.com', 'http://localhost:3000'], // Add your front-end URLs if needed
+    methods: ['POST', 'GET'],
+}));
+
 
 // ===== MIDDLEWARE SETUP =====
 // Parse URL-encoded data for PayFast ITN BEFORE CORS
