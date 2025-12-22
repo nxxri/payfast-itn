@@ -772,7 +772,7 @@ app.get('/itn-validation-test', (req, res) => {
     });
 });
 
-// 7. SIMULATE ITN
+// 7. SIMULATE ITN (CORRECTED - no duplicate booking_id)
 app.post('/simulate-itn', async (req, res) => {
     try {
         const bookingId = req.body.bookingId || 'simulate-' + Date.now();
@@ -784,21 +784,22 @@ app.post('/simulate-itn', async (req, res) => {
             bookingExists = doc.exists;
         }
 
-        // Create test ITN data
+        // Create test ITN data - ONLY valid PayFast parameters
         const testData = {
-            m_payment_id: bookingId,
+            m_payment_id: bookingId, // ✅ This is the booking ID
             pf_payment_id: 'PF' + Date.now(),
             payment_status: 'COMPLETE',
             item_name: 'Test Event Ticket',
             amount_gross: '5.00',
-            amount_fee: '0.50',
-            amount_net: '4.50',
             name_first: 'Test',
             name_last: 'User',
             email_address: 'test@example.com',
             cell_number: '0831234567',
             merchant_id: PAYFAST_CONFIG.merchantId
         };
+
+        // Note: Do NOT include amount_fee, amount_net, or any other non-standard fields
+        // in the signature calculation for ITN verification
 
         // Generate signature
         testData.signature = generatePayFastSignature(testData, PAYFAST_CONFIG.passphrase);
@@ -823,7 +824,8 @@ app.post('/simulate-itn', async (req, res) => {
             bookingId: bookingId,
             bookingExists: bookingExists,
             response: response.data,
-            validationNote: 'This simulation includes all 3 validation steps'
+            validationNote: 'This simulation includes all 3 validation steps',
+            note: 'Only valid PayFast parameters included in test data'
         });
 
     } catch (error) {
@@ -835,8 +837,7 @@ app.post('/simulate-itn', async (req, res) => {
         });
     }
 });
-
-// 8. PROCESS PAYMENT (WITH ALL FIXES)
+// 8. PROCESS PAYMENT (WITH ALL FIXES AND NO DUPLICATE booking_id)
 app.post('/process-payment', async (req, res) => {
     try {
         console.log('🔍 Processing payment request:', JSON.stringify(req.body, null, 2));
@@ -881,7 +882,7 @@ app.post('/process-payment', async (req, res) => {
             email_address: email_address.trim(),
             amount: cleanAmount.toFixed(2),
             item_name: (event_title ? `Salwa Collective: ${event_title}` : (item_name || 'Event Ticket')).trim(),
-            m_payment_id: booking_id.trim()
+            m_payment_id: booking_id.trim() // ✅ This is the ONLY place booking_id should appear
         };
 
         // Optional PayFast parameters
@@ -932,28 +933,56 @@ app.post('/process-payment', async (req, res) => {
         // Generate PayFast URL
         const payfastUrl = PAYFAST_CONFIG.sandbox ? PAYFAST_CONFIG.sandboxUrl : PAYFAST_CONFIG.productionUrl;
 
-        // Convert to query string
+        // Convert to query string - CRITICAL: Only include valid PayFast parameters
         const queryParams = new URLSearchParams();
 
-        // Add parameters in the SAME ORDER as PayFast expects
-        const paramOrder = [
+        // ✅ ONLY valid PayFast parameters (NO booking_id!)
+        const validPayFastParams = [
             'merchant_id', 'merchant_key', 'return_url', 'cancel_url', 'notify_url',
             'name_first', 'name_last', 'email_address', 'cell_number',
-            'amount', 'item_name', 'item_description', 'custom_int1', 'custom_int2',
-            'custom_int3', 'custom_int4', 'custom_int5', 'custom_str1', 'custom_str2',
-            'custom_str3', 'custom_str4', 'custom_str5', 'email_confirmation',
-            'confirmation_address', 'payment_method', 'subscription_type', 'billing_date',
-            'recurring_amount', 'frequency', 'cycles', 'm_payment_id', 'signature'
+            'amount', 'item_name', 'item_description',
+            // Custom fields (if you need them):
+            'custom_int1', 'custom_int2', 'custom_int3', 'custom_int4', 'custom_int5',
+            'custom_str1', 'custom_str2', 'custom_str3', 'custom_str4', 'custom_str5',
+            // Other valid PayFast params:
+            'email_confirmation', 'confirmation_address', 'payment_method',
+            'subscription_type', 'billing_date', 'recurring_amount', 'frequency',
+            'cycles', 'm_payment_id', 'signature'
         ];
 
-        // Add only parameters that exist
-        for (const key of paramOrder) {
+        // Add only valid parameters that exist in paymentData
+        for (const key of validPayFastParams) {
             if (paymentData[key] !== undefined && paymentData[key] !== null && paymentData[key] !== '') {
                 queryParams.append(key, paymentData[key]);
             }
         }
 
         const redirectUrl = `${payfastUrl}?${queryParams.toString()}`;
+
+        // 🚨 DEBUG: Check for invalid parameters
+        console.log('🔍 Checking for invalid parameters in redirect URL:');
+        const urlParams = new URLSearchParams(redirectUrl.split('?')[1]);
+        const paramKeys = Array.from(urlParams.keys());
+
+        // List of valid PayFast parameters
+        const validParams = [
+            'merchant_id', 'merchant_key', 'return_url', 'cancel_url', 'notify_url',
+            'name_first', 'name_last', 'email_address', 'cell_number', 'amount',
+            'item_name', 'item_description', 'custom_int1', 'custom_int2', 'custom_int3',
+            'custom_int4', 'custom_int5', 'custom_str1', 'custom_str2', 'custom_str3',
+            'custom_str4', 'custom_str5', 'email_confirmation', 'confirmation_address',
+            'payment_method', 'subscription_type', 'billing_date', 'recurring_amount',
+            'frequency', 'cycles', 'm_payment_id', 'signature'
+        ];
+
+        const invalidParams = paramKeys.filter(key => !validParams.includes(key));
+
+        if (invalidParams.length > 0) {
+            console.error('❌ INVALID PARAMETERS FOUND:', invalidParams);
+            console.error('These will cause PayFast to return HTTP 400');
+        } else {
+            console.log('✅ All parameters are valid PayFast parameters');
+        }
 
         console.log('🔗 Generated PayFast URL (first 300 chars):', redirectUrl.substring(0, 300));
 
@@ -967,7 +996,9 @@ app.post('/process-payment', async (req, res) => {
                 passphraseUsed: !PAYFAST_CONFIG.sandbox && !!PAYFAST_CONFIG.passphrase,
                 merchant_key: 'INCLUDED in request but EXCLUDED from signature',
                 spacesEncodedAs: '%20 (correct for PayFast signature)',
-                allFixesApplied: true
+                allFixesApplied: true,
+                invalidParamsFound: invalidParams,
+                note: 'booking_id is ONLY stored as m_payment_id (not sent separately)'
             }
         });
 
@@ -1035,22 +1066,22 @@ app.get('/origin-info', (req, res) => {
     });
 });
 
-// 11. DEBUG SIGNATURE ENDPOINT - FIXED
+// 11. DEBUG SIGNATURE ENDPOINT - FIXED (no invalid params)
 app.post('/debug-signature', (req, res) => {
     try {
-        // Exact parameters PayFast expects
+        // Exact parameters PayFast expects - ONLY valid ones
         const testData = {
             merchant_id: PAYFAST_CONFIG.merchantId,
-            merchant_key: PAYFAST_CONFIG.merchantKey, // 🚨 Will be excluded from signature
-            return_url: 'https://salwacollective.co.za/payment-result.html?booking_id=test123',
-            cancel_url: 'https://salwacollective.co.za/payment-result.html?booking_id=test123&cancelled=true',
+            merchant_key: PAYFAST_CONFIG.merchantKey,
+            return_url: 'https://salwacollective.co.za/payment-result.html',
+            cancel_url: 'https://salwacollective.co.za/payment-result.html?cancelled=true',
             notify_url: getNotifyUrl(),
             name_first: 'John',
             name_last: 'Doe',
             email_address: 'john@example.com',
             amount: '5.00',
             item_name: 'Test Event Ticket',
-            m_payment_id: 'test123'
+            m_payment_id: 'test123' // ✅ This is the only place for booking ID
         };
 
         // Generate signature with merchant_key EXCLUDED
@@ -1059,7 +1090,7 @@ app.post('/debug-signature', (req, res) => {
         // Show what fields are included in signature
         const signatureData = { ...testData };
         delete signatureData.signature;
-        delete signatureData.merchant_key; // 🚨 EXCLUDED
+        delete signatureData.merchant_key;
 
         const sortedKeys = Object.keys(signatureData).sort();
         let pfOutput = '';
@@ -1067,16 +1098,14 @@ app.post('/debug-signature', (req, res) => {
         for (let key of sortedKeys) {
             const value = signatureData[key];
             if (value !== undefined && value !== null && value !== '') {
-                // ✅ FIXED: NO .replace(/%20/g, '+') - PayFast uses %20 for spaces
                 const encodedValue = encodeURIComponent(value.toString());
                 pfOutput += `${key}=${encodedValue}&`;
             }
         }
 
-        pfOutput = pfOutput.slice(0, -1); // Remove trailing &
+        pfOutput = pfOutput.slice(0, -1);
 
         if (PAYFAST_CONFIG.passphrase && PAYFAST_CONFIG.passphrase.trim() !== '') {
-            // ✅ FIXED: NO .replace(/%20/g, '+') - PayFast uses %20 for spaces
             const encodedPassphrase = encodeURIComponent(PAYFAST_CONFIG.passphrase.trim());
             pfOutput += `&passphrase=${encodedPassphrase}`;
         }
@@ -1091,14 +1120,11 @@ app.post('/debug-signature', (req, res) => {
             fieldsInSignature: sortedKeys,
             criticalFixes: [
                 '✅ merchant_key EXCLUDED from signature calculation',
-                '✅ NO .replace(/%20/g, "+") - using %20 for spaces'
+                '✅ NO .replace(/%20/g, "+") - using %20 for spaces',
+                '✅ NO invalid parameters (booking_id) - only m_payment_id'
             ],
             fieldsExcluded: ['merchant_key', 'signature'],
-            encodingExample: {
-                item_name: 'Test Event Ticket',
-                encoded: encodeURIComponent('Test Event Ticket'),
-                note: 'Spaces become %20, NOT + (this matches PayFast)'
-            }
+            importantNote: 'ONLY use m_payment_id for booking ID, NOT booking_id parameter'
         });
     } catch (error) {
         console.error('Debug signature error:', error);
