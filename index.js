@@ -5,6 +5,7 @@ const axios = require('axios');
 const querystring = require('querystring');
 const crypto = require('crypto');
 const cors = require('cors');
+
 const app = express();
 
 // ===== MIDDLEWARE SETUP =====
@@ -94,89 +95,52 @@ console.log('='.repeat(60));
 
 // ===== HELPER FUNCTIONS =====
 function generatePayFastSignature(data, passPhrase = null) {
-    // CRITICAL: PayFast 'process' page requires this EXACT field order
-    const fieldOrder = [
-        'merchant_id', 'merchant_key', 'return_url', 'cancel_url', 'notify_url',
-        'name_first', 'name_last', 'email_address', 'cell_number',
-        'm_payment_id', 'amount', 'item_name', 'item_description',
-        'custom_int1', 'custom_int2', 'custom_int3', 'custom_int4', 'custom_int5',
-        'custom_str1', 'custom_str2', 'custom_str3', 'custom_str4', 'custom_str5',
-        'email_confirmation', 'confirmation_address', 'payment_method'
-    ];
+    const signatureData = { ...data };
+    delete signatureData.signature;
 
+    const sortedKeys = Object.keys(signatureData).sort();
     let pfOutput = '';
 
-    // Iterate through the strict order
-    for (let key of fieldOrder) {
-        if (data[key] !== undefined && data[key] !== null && data[key].toString().trim() !== '') {
-            // PayFast hashing EXCLUDES 'signature' and 'merchant_key' from the MD5 string
-            if (key !== 'signature' && key !== 'merchant_key') {
-                // IMPORTANT: For this integration, PayFast requires '+' for spaces
-                const val = encodeURIComponent(data[key].toString().trim()).replace(/%20/g, '+');
-                pfOutput += `${key}=${val}&`;
-            }
+    for (let key of sortedKeys) {
+        if (signatureData[key] !== undefined && signatureData[key] !== null && signatureData[key] !== '') {
+            pfOutput += `${key}=${encodeURIComponent(signatureData[key].toString()).replace(/%20/g, '+')}&`;
         }
     }
 
-    // Remove the final &
     pfOutput = pfOutput.slice(0, -1);
 
-    // Append the passphrase from your screenshot (Salwa20242024)
     if (passPhrase && passPhrase.trim() !== '') {
         pfOutput += `&passphrase=${encodeURIComponent(passPhrase.trim()).replace(/%20/g, '+')}`;
     }
 
     return crypto.createHash('md5').update(pfOutput).digest('hex');
 }
+
 function verifyPayFastSignature(data, passphrase = '') {
     const submittedSignature = data.signature;
     if (!submittedSignature) {
-        console.error('❌ No signature submitted in ITN data');
         return false;
     }
 
-    // Clone data and remove signature for calculation
     const signatureData = { ...data };
     delete signatureData.signature;
 
-    // 🚨 FIXED: Also remove merchant_key if present (defensive)
-    delete signatureData.merchant_key; // 🚨 REQUIRED FIX
-
-    // Sort keys alphabetically
     const sortedKeys = Object.keys(signatureData).sort();
-
-    // Build PayFast parameter string
     let pfParamString = '';
+
     for (const key of sortedKeys) {
-        const value = signatureData[key];
-        if (value !== undefined && value !== null && value !== '') {
-            // ✅ FIXED: Use raw value for ITN data (PayFast already sends URL-encoded values)
-            // Do NOT use encodeURIComponent() here - that would double-encode!
-            pfParamString += `${key}=${value}&`;
+        if (signatureData[key] !== undefined && signatureData[key] !== null && signatureData[key] !== '') {
+            pfParamString += `${key}=${encodeURIComponent(signatureData[key].toString()).replace(/%20/g, '+')}&`;
         }
     }
 
-    // Remove trailing &
     pfParamString = pfParamString.slice(0, -1);
 
-    // Append passphrase if set
     if (passphrase && passphrase.trim() !== '') {
-        // ✅ Passphrase should be encoded
-        pfParamString += `&passphrase=${encodeURIComponent(passphrase.trim())}`;
+        pfParamString += `&passphrase=${encodeURIComponent(passphrase.trim()).replace(/%20/g, '+')}`;
     }
 
-    // Calculate MD5 signature
     const calculatedSignature = crypto.createHash('md5').update(pfParamString).digest('hex');
-
-    // ----- DEBUG LOGGING -----
-    console.log('🟢 PAYFAST SIGNATURE DEBUG:');
-    console.log('Parameter string used for signature:\n', pfParamString);
-    console.log('Submitted signature from PayFast:', submittedSignature);
-    console.log('Calculated signature on server:', calculatedSignature);
-    console.log('Signature match:', calculatedSignature === submittedSignature ? '✅ YES' : '❌ NO');
-    console.log('---------------------------');
-
-    // Return whether signature matches
     return calculatedSignature === submittedSignature;
 }
 
@@ -467,19 +431,16 @@ app.get('/', (req, res) => {
                 .info-box { background: #e7f3fe; border-left: 6px solid #2196F3; padding: 15px; margin: 20px 0; }
                 .cors-info { background: #fff3cd; border-left: 6px solid #ffc107; padding: 15px; margin: 20px 0; }
                 .important { background: #ffebee; border-left: 6px solid #f44336; padding: 15px; margin: 20px 0; }
-                .fixed { background: #d4edda; border-left: 6px solid #28a745; padding: 15px; margin: 20px 0; }
             </style>
         </head>
         <body>
             <h1>🎫 Salwa Collective Payment Server</h1>
             
-            <div class="fixed">
-                <strong>🛡️ ALL CRITICAL BUGS FIXED:</strong><br>
-                • ✅ merchant_key REMOVED from signature calculation<br>
-                • ✅ ITN data: NO double-encoding (raw values used)<br>
-                • ✅ Outgoing data: Properly encoded with encodeURIComponent()<br>
-                • ✅ Passphrase always encoded when used<br>
-                • ✅ Signatures should now match PayFast exactly
+            <div class="important">
+                <strong>🛡️ SECURITY UPDATE:</strong><br>
+                • ITN endpoint now validates with PayFast server (required)<br>
+                • ITN endpoint is CORS-free for 100% reliability<br>
+                • 3-step validation: Signature → PayFast Server → Amount/Merchant
             </div>
             
             <div class="info-box">
@@ -501,7 +462,6 @@ app.get('/', (req, res) => {
             <p><a class="btn" href="/test">🧪 Test Dashboard</a></p>
             <p><a class="btn" href="/health">🩺 Health Check</a></p>
             <p><a class="btn" href="/itn-test">🔗 Test ITN Endpoint</a></p>
-            <p><a class="btn" href="/test-encoding">🔤 Test Encoding</a></p>
             
             <h2>API Endpoints:</h2>
             <div class="endpoint"><strong>POST /process-payment</strong> - Create new payment</div>
@@ -549,18 +509,16 @@ app.get('/test', (req, res) => {
                 .success { border-left-color: #4CAF50; }
                 .info { background: #e7f3fe; padding: 15px; margin: 15px 0; border-radius: 5px; border-left: 4px solid #2196F3; }
                 .important { background: #ffebee; padding: 15px; margin: 15px 0; border-radius: 5px; border-left: 4px solid #f44336; }
-                .fixed { background: #d4edda; padding: 15px; margin: 15px 0; border-radius: 5px; border-left: 4px solid #28a745; }
             </style>
         </head>
         <body>
             <h1>🧪 PayFast Test Dashboard</h1>
             
-            <div class="fixed">
-                <strong>✅ CRITICAL FIX APPLIED:</strong><br>
-                • ITN data: Uses raw values (NO double-encoding)<br>
-                • Outgoing data: Uses encodeURIComponent()<br>
-                • This fixes the signature mismatch bug<br>
-                • Passphrase always properly encoded
+            <div class="important">
+                <strong>⚠️ IMPORTANT SECURITY UPDATE:</strong><br>
+                • ITN now validates with PayFast server (REQUIRED by PayFast)<br>
+                • ITN endpoint has NO CORS for 100% reliability<br>
+                • 3-step validation process implemented
             </div>
             
             <div class="info">
@@ -572,30 +530,16 @@ app.get('/test', (req, res) => {
             </div>
             
             <div>
-                <button onclick="testFinalSignature()">🔐 Test Final Signature</button>
                 <button onclick="testITN()">🔗 Test ITN Endpoint</button>
                 <button onclick="simulateITN()">🔄 Simulate ITN</button>
                 <button onclick="createTestPayment()">💳 Create Test Payment</button>
                 <button onclick="testCORS()">🌐 Test CORS</button>
                 <button onclick="testITNValidation()">🛡️ Test ITN Validation</button>
-                <button onclick="debugSignature()">🔍 Debug Signature</button>
-                <button onclick="testEncoding()">🔤 Test Encoding</button>
             </div>
             
             <div id="result"></div>
             
             <script>
-                async function testFinalSignature() {
-                    showLoading('Testing final signature generation...');
-                    try {
-                        const res = await fetch('/debug-signature-final');
-                        const data = await res.json();
-                        showResult('✅ Final Signature Test:', data, true);
-                    } catch (error) {
-                        showResult('❌ Error:', error, false);
-                    }
-                }
-                
                 async function testITN() {
                     showLoading('Testing ITN endpoint...');
                     try {
@@ -654,8 +598,7 @@ app.get('/test', (req, res) => {
                                 message: 'Payment link generated successfully!',
                                 bookingId: bookingId,
                                 redirectUrl: data.redirectUrl,
-                                paymentLink: '<a href="' + data.redirectUrl + '" target="_blank">Click here to proceed to payment</a>',
-                                signatureGenerated: data.paymentData?.signature ? '✅ Yes' : '❌ No'
+                                paymentLink: '<a href="' + data.redirectUrl + '" target="_blank">Click here to proceed to payment</a>'
                             }, true);
                         } else {
                             showResult('❌ Payment Failed:', data, false);
@@ -689,31 +632,6 @@ app.get('/test', (req, res) => {
                         const res = await fetch('/itn-validation-test');
                         const data = await res.json();
                         showResult('✅ ITN Validation Test:', data, true);
-                    } catch (error) {
-                        showResult('❌ Error:', error, false);
-                    }
-                }
-                
-                async function debugSignature() {
-                    showLoading('Debugging signature generation...');
-                    try {
-                        const res = await fetch('/debug-signature', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' }
-                        });
-                        const data = await res.json();
-                        showResult('✅ Signature Debug:', data, true);
-                    } catch (error) {
-                        showResult('❌ Error:', error, false);
-                    }
-                }
-                
-                async function testEncoding() {
-                    showLoading('Testing encoding differences...');
-                    try {
-                        const res = await fetch('/test-encoding');
-                        const data = await res.json();
-                        showResult('✅ Encoding Test Results:', data, true);
                     } catch (error) {
                         showResult('❌ Error:', error, false);
                     }
@@ -786,7 +704,7 @@ app.get('/itn-validation-test', (req, res) => {
     res.json({
         success: true,
         validationSteps: {
-            step1: '✅ Local signature verification (WITH merchant_key fix)',
+            step1: '✅ Local signature verification',
             step2: '✅ PayFast server validation (/query/validate)',
             step3: '✅ Amount & merchant validation',
             note: 'All 3 steps are now implemented and required'
@@ -796,7 +714,7 @@ app.get('/itn-validation-test', (req, res) => {
     });
 });
 
-// 7. SIMULATE ITN (CORRECTED - uses raw values for ITN simulation)
+// 7. SIMULATE ITN
 app.post('/simulate-itn', async (req, res) => {
     try {
         const bookingId = req.body.bookingId || 'simulate-' + Date.now();
@@ -808,27 +726,27 @@ app.post('/simulate-itn', async (req, res) => {
             bookingExists = doc.exists;
         }
 
-        // Create test ITN data - ONLY valid PayFast parameters
-        // These values should be URL-encoded as PayFast would send them
+        // Create test ITN data
         const testData = {
-            m_payment_id: encodeURIComponent(bookingId), // ✅ Simulate PayFast's encoding
+            m_payment_id: bookingId,
             pf_payment_id: 'PF' + Date.now(),
             payment_status: 'COMPLETE',
-            item_name: encodeURIComponent('Test Event Ticket'),
+            item_name: 'Test Event Ticket',
             amount_gross: '5.00',
-            name_first: encodeURIComponent('Test'),
-            name_last: encodeURIComponent('User'),
-            email_address: 'test%40example.com', // ✅ Simulate encoded @ symbol
+            amount_fee: '0.50',
+            amount_net: '4.50',
+            name_first: 'Test',
+            name_last: 'User',
+            email_address: 'test@example.com',
             cell_number: '0831234567',
             merchant_id: PAYFAST_CONFIG.merchantId
         };
 
-        // Generate signature for ITN data (use raw/encoded values)
-        testData.signature = generatePayFastSignature(testData, PAYFAST_CONFIG.passphrase, true);
+        // Generate signature
+        testData.signature = generatePayFastSignature(testData, PAYFAST_CONFIG.passphrase);
 
         console.log('🧪 Simulating ITN for booking:', bookingId);
         console.log('Booking exists in Firestore:', bookingExists);
-        console.log('ITN Test Data:', testData);
 
         // Call ITN endpoint
         const response = await axios.post(
@@ -847,9 +765,7 @@ app.post('/simulate-itn', async (req, res) => {
             bookingId: bookingId,
             bookingExists: bookingExists,
             response: response.data,
-            validationNote: 'This simulation includes all 3 validation steps',
-            encodingNote: 'Values are URL-encoded as PayFast would send them',
-            signatureNote: 'Signature generated with isItnData=true flag'
+            validationNote: 'This simulation includes all 3 validation steps'
         });
 
     } catch (error) {
@@ -862,74 +778,41 @@ app.post('/simulate-itn', async (req, res) => {
     }
 });
 
-// 8. PROCESS PAYMENT (WITH ALL FIXES AND NO DUPLICATE booking_id)
+// 8. PROCESS PAYMENT
 app.post('/process-payment', async (req, res) => {
     try {
-        console.log('🔍 Processing payment request:', JSON.stringify(req.body, null, 2));
+        console.log('Processing payment request:', req.body);
 
-        // Required fields
-        const {
-            amount,
-            item_name,
-            email_address,
-            booking_id,
-            name_first,
-            name_last,
-            cell_number,
-            event_title
-        } = req.body;
+        const { amount, item_name, email_address, booking_id, name_first, name_last } = req.body;
 
         if (!amount || !email_address || !booking_id) {
             return res.status(400).json({
                 success: false,
-                error: 'Missing required fields: amount, email_address, or booking_id'
+                error: 'Missing required fields'
             });
         }
 
-        // Validate amount format
-        const cleanAmount = parseFloat(amount.toString().replace(/[^0-9.]/g, ''));
-        if (isNaN(cleanAmount)) {
-            return res.status(400).json({
-                success: false,
-                error: 'Invalid amount format. Must be a number (e.g., 5.00)'
-            });
-        }
+        const payfastUrl = PAYFAST_CONFIG.sandbox ? PAYFAST_CONFIG.sandboxUrl : PAYFAST_CONFIG.productionUrl;
+        const returnUrl = `https://salwacollective.co.za/payment-result.html?booking_id=${booking_id}`;
+        const cancelUrl = `https://salwacollective.co.za/payment-result.html?booking_id=${booking_id}&cancelled=true`;
+        const notifyUrl = getNotifyUrl();
 
-        // ===== PAYFAST PARAMETERS =====
         const paymentData = {
             merchant_id: PAYFAST_CONFIG.merchantId,
-            merchant_key: PAYFAST_CONFIG.merchantKey, // 🚨 SENT to PayFast but NOT hashed
-            return_url: `https://salwacollective.co.za/payment-result.html`,
-            cancel_url: `https://salwacollective.co.za/payment-result.html?cancelled=true`,
-            notify_url: getNotifyUrl(),
-            name_first: (name_first || '').trim(),
-            name_last: (name_last || '').trim(),
-            email_address: email_address.trim(),
-            amount: cleanAmount.toFixed(2),
-            item_name: (event_title ? `Salwa Collective: ${event_title}` : (item_name || 'Event Ticket')).trim(),
-            m_payment_id: booking_id.trim() // ✅ This is the ONLY place booking_id should appear
+            merchant_key: PAYFAST_CONFIG.merchantKey,
+            return_url: returnUrl,
+            cancel_url: cancelUrl,
+            notify_url: notifyUrl,
+            name_first: name_first || '',
+            name_last: name_last || '',
+            email_address: email_address,
+            amount: parseFloat(amount).toFixed(2),
+            item_name: item_name || 'Event Ticket',
+            m_payment_id: booking_id
         };
 
-        // Optional PayFast parameters
-        if (cell_number && cell_number.trim() !== '') {
-            paymentData.cell_number = cell_number.trim();
-        }
-
-        console.log('📋 PayFast payment data:', JSON.stringify(paymentData, null, 2));
-
-        // ===== Generate signature with ALL fixes =====
-        let signature;
-        if (PAYFAST_CONFIG.sandbox) {
-            console.log('⚠️ SANDBOX MODE: Generating signature WITHOUT passphrase');
-            signature = generatePayFastSignature(paymentData, ''); // Empty passphrase for sandbox
-        } else {
-            console.log('🔄 PRODUCTION MODE: Generating signature WITH passphrase');
-            signature = generatePayFastSignature(paymentData, PAYFAST_CONFIG.passphrase);
-        }
-
+        const signature = generatePayFastSignature(paymentData, PAYFAST_CONFIG.passphrase);
         paymentData.signature = signature;
-
-        console.log('✅ Generated signature (ALL FIXES APPLIED):', signature);
 
         // Store booking in Firestore
         if (db) {
@@ -937,103 +820,35 @@ app.post('/process-payment', async (req, res) => {
                 bookingId: booking_id,
                 status: 'pending_payment',
                 paymentStatus: 'PENDING',
-                totalAmount: cleanAmount,
-                itemName: paymentData.item_name,
+                totalAmount: parseFloat(amount),
+                itemName: item_name,
                 customerEmail: email_address,
                 customerFirstName: name_first || '',
                 customerLastName: name_last || '',
-                cellNumber: cell_number || '',
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
                 lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
                 paymentTimeout: new Date(Date.now() + 30 * 60 * 1000),
-                itnReceived: false,
-                paymentData: paymentData,
-                signatureNote: 'ALL fixes applied: merchant_key excluded, proper encoding'
+                itnReceived: false
             };
 
             await db.collection('bookings').doc(booking_id).set(bookingData);
             console.log(`✅ Booking ${booking_id} stored in Firestore`);
         }
 
-        // Generate PayFast URL
-        const payfastUrl = PAYFAST_CONFIG.sandbox ? PAYFAST_CONFIG.sandboxUrl : PAYFAST_CONFIG.productionUrl;
-
-        // Convert to query string - CRITICAL: Only include valid PayFast parameters
-        const queryParams = new URLSearchParams();
-
-        // ✅ ONLY valid PayFast parameters (NO booking_id!)
-        const validPayFastParams = [
-            'merchant_id', 'merchant_key', 'return_url', 'cancel_url', 'notify_url',
-            'name_first', 'name_last', 'email_address', 'cell_number',
-            'amount', 'item_name', 'item_description',
-            // Custom fields (if you need them):
-            'custom_int1', 'custom_int2', 'custom_int3', 'custom_int4', 'custom_int5',
-            'custom_str1', 'custom_str2', 'custom_str3', 'custom_str4', 'custom_str5',
-            // Other valid PayFast params:
-            'email_confirmation', 'confirmation_address', 'payment_method',
-            'subscription_type', 'billing_date', 'recurring_amount', 'frequency',
-            'cycles', 'm_payment_id', 'signature'
-        ];
-
-        // Add only valid parameters that exist in paymentData
-        for (const key of validPayFastParams) {
-            if (paymentData[key] !== undefined && paymentData[key] !== null && paymentData[key] !== '') {
-                queryParams.append(key, paymentData[key]);
-            }
-        }
-
-        const redirectUrl = `${payfastUrl}?${queryParams.toString()}`;
-
-        // 🚨 DEBUG: Check for invalid parameters
-        console.log('🔍 Checking for invalid parameters in redirect URL:');
-        const urlParams = new URLSearchParams(redirectUrl.split('?')[1]);
-        const paramKeys = Array.from(urlParams.keys());
-
-        // List of valid PayFast parameters
-        const validParams = [
-            'merchant_id', 'merchant_key', 'return_url', 'cancel_url', 'notify_url',
-            'name_first', 'name_last', 'email_address', 'cell_number', 'amount',
-            'item_name', 'item_description', 'custom_int1', 'custom_int2', 'custom_int3',
-            'custom_int4', 'custom_int5', 'custom_str1', 'custom_str2', 'custom_str3',
-            'custom_str4', 'custom_str5', 'email_confirmation', 'confirmation_address',
-            'payment_method', 'subscription_type', 'billing_date', 'recurring_amount',
-            'frequency', 'cycles', 'm_payment_id', 'signature'
-        ];
-
-        const invalidParams = paramKeys.filter(key => !validParams.includes(key));
-
-        if (invalidParams.length > 0) {
-            console.error('❌ INVALID PARAMETERS FOUND:', invalidParams);
-            console.error('These will cause PayFast to return HTTP 400');
-        } else {
-            console.log('✅ All parameters are valid PayFast parameters');
-        }
-
-        console.log('🔗 Generated PayFast URL (first 300 chars):', redirectUrl.substring(0, 300));
+        const redirectUrl = `${payfastUrl}?${new URLSearchParams(paymentData).toString()}`;
 
         res.json({
             success: true,
             redirectUrl: redirectUrl,
-            bookingId: booking_id,
-            debug: {
-                signatureGenerated: signature.substring(0, 10) + '...',
-                sandboxMode: PAYFAST_CONFIG.sandbox,
-                passphraseUsed: !PAYFAST_CONFIG.sandbox && !!PAYFAST_CONFIG.passphrase,
-                merchant_key: 'INCLUDED in request but EXCLUDED from signature',
-                encodingMethod: 'encodeURIComponent() for outgoing data',
-                allFixesApplied: true,
-                invalidParamsFound: invalidParams,
-                note: 'booking_id is ONLY stored as m_payment_id (not sent separately)'
-            }
+            bookingId: booking_id
         });
 
     } catch (error) {
-        console.error('❌ Payment processing error:', error);
+        console.error('Payment processing error:', error);
         res.status(500).json({
             success: false,
             error: 'Payment processing failed',
-            message: error.message,
-            stack: error.stack
+            message: error.message
         });
     }
 });
@@ -1068,9 +883,7 @@ app.post('/check-status', async (req, res) => {
             itnReceived: data.itnReceived || false,
             validationStatus: data.validationStatus || 'not_validated',
             amount: data.totalAmount || data.amountPaid || 0,
-            email: data.customerEmail || '',
-            signature: data.signature || 'none',
-            hasPaymentData: !!data.paymentData
+            email: data.customerEmail || ''
         });
 
     } catch (error) {
@@ -1091,235 +904,7 @@ app.get('/origin-info', (req, res) => {
     });
 });
 
-// 11. DEBUG SIGNATURE ENDPOINT - FIXED (no invalid params)
-app.post('/debug-signature', (req, res) => {
-    try {
-        // Exact parameters PayFast expects - ONLY valid ones
-        const testData = {
-            merchant_id: PAYFAST_CONFIG.merchantId,
-            merchant_key: PAYFAST_CONFIG.merchantKey,
-            return_url: 'https://salwacollective.co.za/payment-result.html',
-            cancel_url: 'https://salwacollective.co.za/payment-result.html?cancelled=true',
-            notify_url: getNotifyUrl(),
-            name_first: 'John',
-            name_last: 'Doe',
-            email_address: 'john@example.com',
-            amount: '5.00',
-            item_name: 'Test Event Ticket',
-            m_payment_id: 'test123' // ✅ This is the only place for booking ID
-        };
-
-        // Generate signature with merchant_key EXCLUDED (outgoing data)
-        const signature = generatePayFastSignature(testData, PAYFAST_CONFIG.passphrase);
-
-        // Show what fields are included in signature
-        const signatureData = { ...testData };
-        delete signatureData.signature;
-        delete signatureData.merchant_key;
-
-        const sortedKeys = Object.keys(signatureData).sort();
-        let pfOutput = '';
-
-        for (let key of sortedKeys) {
-            const value = signatureData[key];
-            if (value !== undefined && value !== null && value !== '') {
-                const encodedValue = encodeURIComponent(value.toString());
-                pfOutput += `${key}=${encodedValue}&`;
-            }
-        }
-
-        pfOutput = pfOutput.slice(0, -1);
-
-        if (PAYFAST_CONFIG.passphrase && PAYFAST_CONFIG.passphrase.trim() !== '') {
-            const encodedPassphrase = encodeURIComponent(PAYFAST_CONFIG.passphrase.trim());
-            pfOutput += `&passphrase=${encodedPassphrase}`;
-        }
-
-        res.json({
-            success: true,
-            testData: testData,
-            signature: signature,
-            parameterString: pfOutput,
-            md5Hash: signature,
-            passphraseUsed: !!PAYFAST_CONFIG.passphrase,
-            fieldsInSignature: sortedKeys,
-            criticalFixes: [
-                '✅ merchant_key EXCLUDED from signature calculation',
-                '✅ Using encodeURIComponent() for outgoing data',
-                '✅ NO invalid parameters (booking_id) - only m_payment_id'
-            ],
-            fieldsExcluded: ['merchant_key', 'signature'],
-            importantNote: 'ONLY use m_payment_id for booking ID, NOT booking_id parameter'
-        });
-    } catch (error) {
-        console.error('Debug signature error:', error);
-        res.status(500).json({
-            success: false,
-            error: error.message,
-            stack: error.stack
-        });
-    }
-});
-
-// 12. VALIDATE PAYFAST REDIRECT
-app.get('/validate-redirect', (req, res) => {
-    try {
-        // Parse query params to see what PayFast would receive
-        const params = { ...req.query };
-
-        // Generate signature from these params
-        const generatedSignature = generatePayFastSignature(params, PAYFAST_CONFIG.passphrase);
-        const submittedSignature = params.signature || '';
-
-        const isValid = generatedSignature === submittedSignature;
-
-        res.json({
-            success: true,
-            isValid: isValid,
-            submittedSignature: submittedSignature,
-            generatedSignature: generatedSignature,
-            params: params,
-            fieldCount: Object.keys(params).length,
-            merchant_key: params.merchant_key ? 'Present but EXCLUDED from signature' : 'Not present',
-            fixesApplied: [
-                '✅ merchant_key excluded from signature calculation',
-                '✅ Proper encoding based on data source'
-            ]
-        });
-    } catch (error) {
-        console.error('Validate redirect error:', error);
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});
-
-// 13. TEST ENCODING ENDPOINT
-app.get('/test-encoding', (req, res) => {
-    const testValues = [
-        { original: 'Test Product', description: 'Simple product name' },
-        { original: 'Test & Product', description: 'With ampersand' },
-        { original: 'Test Product: Special', description: 'With colon' },
-        { original: 'Test/Product', description: 'With slash' },
-        { original: 'Test Product (2024)', description: 'With parentheses' },
-        { original: 'Test+Product', description: 'With plus sign' },
-        { original: 'Test%20Product', description: 'With percent-encoded space' },
-        { original: 'Test Product with spaces', description: 'Multiple spaces' }
-    ];
-
-    const results = testValues.map(item => ({
-        description: item.description,
-        original: item.original,
-        encodedOnce: encodeURIComponent(item.original),
-        encodedTwice: encodeURIComponent(encodeURIComponent(item.original)),
-        rawVsEncoded: item.original === encodeURIComponent(item.original) ? 'Same' : 'Different'
-    }));
-
-    res.json({
-        title: 'Encoding Test Results',
-        importantNotes: [
-            'PayFast sends URL-encoded values in ITN. Do NOT encode them again.',
-            'Outgoing data to PayFast MUST be encoded with encodeURIComponent()',
-            'ITN verification uses raw (already encoded) values from PayFast'
-        ],
-        testCases: results,
-        criticalRule: 'ITN data (incoming): Use raw values | Outgoing data: Use encodeURIComponent()'
-    });
-});
-
-// 14. DEBUG SIGNATURE FINAL (CORRECTED)
-app.get('/debug-signature-final', (req, res) => {
-    try {
-        // Test with actual data
-        const testData = {
-            merchant_id: PAYFAST_CONFIG.merchantId,
-            merchant_key: PAYFAST_CONFIG.merchantKey,
-            return_url: 'https://salwacollective.co.za/payment-result.html',
-            cancel_url: 'https://salwacollective.co.za/payment-result.html?cancelled=true',
-            notify_url: getNotifyUrl(),
-            name_first: 'Test',
-            name_last: 'User',
-            email_address: 'test@example.com',
-            amount: '5.00',
-            item_name: 'Test Product',
-            m_payment_id: 'test-456'
-        };
-
-        // Show CORRECT way for outgoing data
-        const signatureCorrect = generatePayFastSignature(testData, PAYFAST_CONFIG.passphrase);
-
-        // Show what the parameter string looks like
-        const signatureData = { ...testData };
-        delete signatureData.signature;
-        delete signatureData.merchant_key;
-
-        const sortedKeys = Object.keys(signatureData).sort();
-        let pfOutputCorrect = '';
-        for (let key of sortedKeys) {
-            const value = signatureData[key];
-            if (value !== undefined && value !== null && value !== '') {
-                // ✅ CORRECT for outgoing: encodeURIComponent
-                pfOutputCorrect += `${key}=${encodeURIComponent(value.toString())}&`;
-            }
-        }
-        pfOutputCorrect = pfOutputCorrect.slice(0, -1);
-        if (PAYFAST_CONFIG.passphrase && PAYFAST_CONFIG.passphrase.trim() !== '') {
-            // ✅ CORRECT: encodeURIComponent only
-            pfOutputCorrect += `&passphrase=${encodeURIComponent(PAYFAST_CONFIG.passphrase.trim())}`;
-        }
-
-        // Also show ITN-style data
-        const itnStyleData = {
-            ...testData,
-            item_name: encodeURIComponent('Test Product'),
-            name_first: encodeURIComponent('Test'),
-            name_last: encodeURIComponent('User'),
-            email_address: 'test%40example.com'
-        };
-        const itnSignature = generatePayFastSignature(itnStyleData, PAYFAST_CONFIG.passphrase, true);
-
-        res.json({
-            success: true,
-            status: 'ALL CRITICAL FIXES APPLIED',
-            outgoingSignature: signatureCorrect,
-            outgoingParameterString: pfOutputCorrect,
-            itnStyleSignature: itnSignature,
-            fixesApplied: [
-                '1. ✅ merchant_key excluded from signature calculation',
-                '2. ✅ Outgoing data: encodeURIComponent()',
-                '3. ✅ ITN data: Raw values (no double-encoding)',
-                '4. ✅ Passphrase always encoded when used'
-            ],
-            encodingRules: {
-                outgoingToPayFast: 'Use encodeURIComponent()',
-                incomingFromPayFast: 'Use raw values (already encoded)',
-                passphrase: 'Always encode with encodeURIComponent()',
-                critical: 'DO NOT double-encode ITN data!'
-            },
-            examples: {
-                outgoing: {
-                    item_name: 'Test Product',
-                    encoded: encodeURIComponent('Test Product'),
-                    note: 'Space becomes %20 for signature'
-                },
-                incoming: {
-                    item_name: 'Test%20Product',
-                    note: 'Use as-is, do NOT encode again'
-                }
-            }
-        });
-
-    } catch (error) {
-        console.error('Debug signature final error:', error);
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});
-
-// 15. 404 HANDLER
+// 11. 404 HANDLER
 app.use((req, res) => {
     res.status(404).json({ error: 'Route not found', path: req.url });
 });
@@ -1333,18 +918,13 @@ app.listen(PORT, () => {
     🧪 Test Dashboard: http://localhost:${PORT}/test
     🔗 ITN Endpoint: ${getNotifyUrl()}
     🛡️ Mode: ${PAYFAST_CONFIG.sandbox ? 'SANDBOX' : 'PRODUCTION'}
+    🔐 CORS: Enabled (${ALLOWED_ORIGINS.length} origins, credentials allowed)
+    🚫 ITN CORS: Disabled (required by PayFast)
     
-    ✅ ALL CRITICAL PAYFAST BUGS FIXED:
-    1. ✅ merchant_key EXCLUDED from signature calculation
-    2. ✅ ITN data: Raw values (NO double-encoding)
-    3. ✅ Outgoing data: Proper encodeURIComponent()
-    4. ✅ Passphrase always encoded when used
-    
-    🎯 FINAL STATE:
-    • merchant_key: Sent to PayFast but NOT hashed
-    • Outgoing signatures: encodeURIComponent() applied
-    • ITN signatures: Raw values (already encoded by PayFast)
-    • Passphrase: Always encoded with encodeURIComponent()
+    ✅ PAYFAST COMPLIANCE UPDATES:
+    1. ✅ 3-step ITN validation implemented
+    2. ✅ PayFast server validation (/query/validate)
+    3. ✅ ITN endpoint CORS-free for reliability
     
     📋 API Endpoints:
     - GET  /                  - Home page
@@ -1353,32 +933,14 @@ app.listen(PORT, () => {
     - GET  /itn-test          - Test ITN endpoint
     - GET  /itn-validation-test - Test validation process
     - GET  /origin-info       - CORS debugging
-    - GET  /validate-redirect - Validate PayFast redirect
-    - GET  /debug-signature-final - Test ALL fixes
-    - GET  /test-encoding     - Test encoding differences
-    - POST /debug-signature   - Debug signature generation
-    - POST /process-payment   - Create payment (ALL FIXES)
+    - POST /process-payment   - Create payment
     - POST /payfast-notify    - ITN webhook (NO CORS)
     - POST /check-status      - Check booking status
     - POST /simulate-itn      - Simulate ITN
     - POST /create-test-booking - Create test booking
     
-    🔧 THE CRITICAL FIXES:
-    1. In verifyPayFastSignature():
-       - Use raw values: pfParamString += \`\${key}=\${value}&\`
-       - NO encodeURIComponent() for ITN data!
-    
-    2. In generatePayFastSignature():
-       - Added isItnData flag
-       - ITN data: Raw values
-       - Outgoing data: encodeURIComponent()
-    
-    3. In simulate ITN:
-       - Values are pre-encoded as PayFast would send them
-       - Uses isItnData=true flag
-    
     ✅ Ready to receive PayFast ITN notifications!
-    ✅ All signature bugs fixed
-    ✅ Signatures should now match PayFast exactly
+    ✅ PayFast-compliant 3-step validation
+    ✅ ITN endpoint is CORS-free (as required)
     `);
 });
