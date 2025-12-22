@@ -123,30 +123,50 @@ function generatePayFastSignature(data, passPhrase = null) {
 function verifyPayFastSignature(data, passphrase = '') {
     const submittedSignature = data.signature;
     if (!submittedSignature) {
+        console.error('❌ No signature submitted in ITN data');
         return false;
     }
 
+    // Clone data and remove signature for calculation
     const signatureData = { ...data };
     delete signatureData.signature;
 
+    // Sort keys alphabetically
     const sortedKeys = Object.keys(signatureData).sort();
-    let pfParamString = '';
 
+    // Build PayFast parameter string
+    let pfParamString = '';
     for (const key of sortedKeys) {
-        if (signatureData[key] !== undefined && signatureData[key] !== null && signatureData[key] !== '') {
-            pfParamString += `${key}=${encodeURIComponent(signatureData[key].toString()).replace(/%20/g, '+')}&`;
+        const value = signatureData[key];
+        if (value !== undefined && value !== null && value !== '') {
+            // Encode values according to PayFast spec
+            pfParamString += `${key}=${encodeURIComponent(value.toString()).replace(/%20/g, '+')}&`;
         }
     }
 
+    // Remove trailing &
     pfParamString = pfParamString.slice(0, -1);
 
+    // Append passphrase if set
     if (passphrase && passphrase.trim() !== '') {
         pfParamString += `&passphrase=${encodeURIComponent(passphrase.trim()).replace(/%20/g, '+')}`;
     }
 
+    // Calculate MD5 signature
     const calculatedSignature = crypto.createHash('md5').update(pfParamString).digest('hex');
+
+    // ----- DEBUG LOGGING -----
+    console.log('🟢 PAYFAST SIGNATURE DEBUG:');
+    console.log('Parameter string used for signature:\n', pfParamString);
+    console.log('Submitted signature from PayFast:', submittedSignature);
+    console.log('Calculated signature on server:', calculatedSignature);
+    console.log('Signature match:', calculatedSignature === submittedSignature ? '✅ YES' : '❌ NO');
+    console.log('---------------------------');
+
+    // Return whether signature matches
     return calculatedSignature === submittedSignature;
 }
+
 
 function getNotifyUrl() {
     const renderUrl = process.env.RENDER_EXTERNAL_URL;
