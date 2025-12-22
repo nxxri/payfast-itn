@@ -6,11 +6,6 @@ const querystring = require('querystring');
 const crypto = require('crypto');
 const cors = require('cors');
 const app = express();
-app.use(cors({
-    origin: ['https://payfast-itn.onrender.com', 'http://localhost:3000'], // Add your front-end URLs if needed
-    methods: ['POST', 'GET'],
-}));
-
 
 // ===== MIDDLEWARE SETUP =====
 // Parse URL-encoded data for PayFast ITN BEFORE CORS
@@ -167,7 +162,6 @@ function verifyPayFastSignature(data, passphrase = '') {
     return calculatedSignature === submittedSignature;
 }
 
-
 function getNotifyUrl() {
     const renderUrl = process.env.RENDER_EXTERNAL_URL;
     const renderHostname = process.env.RENDER_EXTERNAL_HOSTNAME;
@@ -190,7 +184,6 @@ app.post('/payfast-notify', async (req, res) => {
     console.log('\n' + '='.repeat(70));
     console.log('🟣 PAYFAST ITN RECEIVED (NO CORS)');
     console.log('='.repeat(70));
-
 
     const data = req.body;
     console.log('ITN Data:', JSON.stringify(data, null, 2));
@@ -560,6 +553,7 @@ app.get('/test', (req, res) => {
                 <button onclick="createTestPayment()">💳 Create Test Payment</button>
                 <button onclick="testCORS()">🌐 Test CORS</button>
                 <button onclick="testITNValidation()">🛡️ Test ITN Validation</button>
+                <button onclick="debugSignature()">🔐 Debug Signature</button>
             </div>
             
             <div id="result"></div>
@@ -623,7 +617,8 @@ app.get('/test', (req, res) => {
                                 message: 'Payment link generated successfully!',
                                 bookingId: bookingId,
                                 redirectUrl: data.redirectUrl,
-                                paymentLink: '<a href="' + data.redirectUrl + '" target="_blank">Click here to proceed to payment</a>'
+                                paymentLink: '<a href="' + data.redirectUrl + '" target="_blank">Click here to proceed to payment</a>',
+                                signatureGenerated: data.paymentData?.signature ? '✅ Yes' : '❌ No'
                             }, true);
                         } else {
                             showResult('❌ Payment Failed:', data, false);
@@ -657,6 +652,20 @@ app.get('/test', (req, res) => {
                         const res = await fetch('/itn-validation-test');
                         const data = await res.json();
                         showResult('✅ ITN Validation Test:', data, true);
+                    } catch (error) {
+                        showResult('❌ Error:', error, false);
+                    }
+                }
+                
+                async function debugSignature() {
+                    showLoading('Debugging signature generation...');
+                    try {
+                        const res = await fetch('/debug-signature', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                        const data = await res.json();
+                        showResult('✅ Signature Debug:', data, true);
                     } catch (error) {
                         showResult('❌ Error:', error, false);
                     }
@@ -803,41 +812,72 @@ app.post('/simulate-itn', async (req, res) => {
     }
 });
 
-// 8. PROCESS PAYMENT
+// 8. PROCESS PAYMENT (FIXED VERSION)
 app.post('/process-payment', async (req, res) => {
     try {
-        console.log('Processing payment request:', req.body);
+        console.log('🔍 Processing payment request:', JSON.stringify(req.body, null, 2));
 
-        const { amount, item_name, email_address, booking_id, name_first, name_last } = req.body;
+        // Required fields
+        const {
+            amount,
+            item_name,
+            email_address,
+            booking_id,
+            name_first,
+            name_last,
+            // Optional fields that might come from frontend
+            cell_number,
+            event_title,
+            ticket_quantity,
+            event_id
+        } = req.body;
 
         if (!amount || !email_address || !booking_id) {
             return res.status(400).json({
                 success: false,
-                error: 'Missing required fields'
+                error: 'Missing required fields: amount, email_address, or booking_id'
             });
         }
 
-        const payfastUrl = PAYFAST_CONFIG.sandbox ? PAYFAST_CONFIG.sandboxUrl : PAYFAST_CONFIG.productionUrl;
-        const returnUrl = `https://salwacollective.co.za/payment-result.html?booking_id=${booking_id}`;
-        const cancelUrl = `https://salwacollective.co.za/payment-result.html?booking_id=${booking_id}&cancelled=true`;
-        const notifyUrl = getNotifyUrl();
+        // Validate amount format (must be numeric, no "R" prefix)
+        const cleanAmount = parseFloat(amount.toString().replace(/[^0-9.]/g, ''));
+        if (isNaN(cleanAmount)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid amount format. Must be a number (e.g., 5.00)'
+            });
+        }
 
+        // Create the complete PayFast payment data object
         const paymentData = {
             merchant_id: PAYFAST_CONFIG.merchantId,
             merchant_key: PAYFAST_CONFIG.merchantKey,
-            return_url: returnUrl,
-            cancel_url: cancelUrl,
-            notify_url: notifyUrl,
+            return_url: `https://salwacollective.co.za/payment-result.html?booking_id=${booking_id}`,
+            cancel_url: `https://salwacollective.co.za/payment-result.html?booking_id=${booking_id}&cancelled=true`,
+            notify_url: getNotifyUrl(),
             name_first: name_first || '',
             name_last: name_last || '',
             email_address: email_address,
-            amount: parseFloat(amount).toFixed(2),
-            item_name: item_name || 'Event Ticket',
+            amount: cleanAmount.toFixed(2), // Ensure exactly 2 decimal places
+            item_name: event_title ? `Salwa Collective: ${event_title}` : (item_name || 'Event Ticket'),
             m_payment_id: booking_id
         };
 
+        // Add optional fields ONLY if they exist and are not empty
+        // These fields MUST be included in the signature if sent to PayFast
+        if (cell_number && cell_number.trim() !== '') {
+            paymentData.cell_number = cell_number.trim();
+        }
+
+        // Log what we're sending to PayFast
+        console.log('📋 PayFast payment data (before signature):', paymentData);
+
+        // Generate signature with ALL fields that will be sent
         const signature = generatePayFastSignature(paymentData, PAYFAST_CONFIG.passphrase);
         paymentData.signature = signature;
+
+        console.log('✅ Generated signature:', signature);
+        console.log('📦 Full payment data to send:', paymentData);
 
         // Store booking in Firestore
         if (db) {
@@ -845,35 +885,47 @@ app.post('/process-payment', async (req, res) => {
                 bookingId: booking_id,
                 status: 'pending_payment',
                 paymentStatus: 'PENDING',
-                totalAmount: parseFloat(amount),
-                itemName: item_name,
+                totalAmount: cleanAmount,
+                itemName: paymentData.item_name,
                 customerEmail: email_address,
                 customerFirstName: name_first || '',
                 customerLastName: name_last || '',
+                cellNumber: cell_number || '',
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
                 lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
                 paymentTimeout: new Date(Date.now() + 30 * 60 * 1000),
-                itnReceived: false
+                itnReceived: false,
+                paymentData: paymentData, // Store the exact payment data sent to PayFast
+                signature: signature, // Store the generated signature for debugging
+                ticketQuantity: ticket_quantity || 1,
+                eventId: event_id || ''
             };
 
             await db.collection('bookings').doc(booking_id).set(bookingData);
-            console.log(`✅ Booking ${booking_id} stored in Firestore`);
+            console.log(`✅ Booking ${booking_id} stored in Firestore with payment data`);
         }
 
-        const redirectUrl = `${payfastUrl}?${new URLSearchParams(paymentData).toString()}`;
+        // Generate the PayFast URL
+        const payfastUrl = PAYFAST_CONFIG.sandbox ? PAYFAST_CONFIG.sandboxUrl : PAYFAST_CONFIG.productionUrl;
+        const redirectUrl = `${payfastUrl}?${querystring.stringify(paymentData)}`;
+
+        console.log('🔗 PayFast redirect URL generated');
+        console.log('🎯 Redirecting to:', redirectUrl);
 
         res.json({
             success: true,
             redirectUrl: redirectUrl,
-            bookingId: booking_id
+            bookingId: booking_id,
+            paymentData: paymentData // For debugging
         });
 
     } catch (error) {
-        console.error('Payment processing error:', error);
+        console.error('❌ Payment processing error:', error);
         res.status(500).json({
             success: false,
             error: 'Payment processing failed',
-            message: error.message
+            message: error.message,
+            stack: error.stack
         });
     }
 });
@@ -908,7 +960,9 @@ app.post('/check-status', async (req, res) => {
             itnReceived: data.itnReceived || false,
             validationStatus: data.validationStatus || 'not_validated',
             amount: data.totalAmount || data.amountPaid || 0,
-            email: data.customerEmail || ''
+            email: data.customerEmail || '',
+            signature: data.signature || 'none',
+            hasPaymentData: !!data.paymentData
         });
 
     } catch (error) {
@@ -929,7 +983,95 @@ app.get('/origin-info', (req, res) => {
     });
 });
 
-// 11. 404 HANDLER
+// 11. DEBUG SIGNATURE ENDPOINT
+app.post('/debug-signature', (req, res) => {
+    try {
+        // Test data matching what would come from frontend
+        const testData = {
+            merchant_id: PAYFAST_CONFIG.merchantId,
+            merchant_key: PAYFAST_CONFIG.merchantKey,
+            return_url: `https://salwacollective.co.za/payment-result.html?booking_id=test-123`,
+            cancel_url: `https://salwacollective.co.za/payment-result.html?booking_id=test-123&cancelled=true`,
+            notify_url: getNotifyUrl(),
+            name_first: 'John',
+            name_last: 'Doe',
+            email_address: 'john@example.com',
+            amount: '5.00',
+            item_name: 'Test Event Ticket',
+            m_payment_id: 'test-123',
+            cell_number: '0831234567'
+        };
+
+        const signature = generatePayFastSignature(testData, PAYFAST_CONFIG.passphrase);
+
+        // Generate parameter string to see exactly what's being hashed
+        const signatureData = { ...testData };
+        delete signatureData.signature;
+
+        const sortedKeys = Object.keys(signatureData).sort();
+        let pfOutput = '';
+
+        for (let key of sortedKeys) {
+            if (signatureData[key] !== undefined && signatureData[key] !== null && signatureData[key] !== '') {
+                pfOutput += `${key}=${encodeURIComponent(signatureData[key].toString()).replace(/%20/g, '+')}&`;
+            }
+        }
+
+        pfOutput = pfOutput.slice(0, -1);
+
+        if (PAYFAST_CONFIG.passphrase && PAYFAST_CONFIG.passphrase.trim() !== '') {
+            pfOutput += `&passphrase=${encodeURIComponent(PAYFAST_CONFIG.passphrase.trim()).replace(/%20/g, '+')}`;
+        }
+
+        res.json({
+            success: true,
+            testData: testData,
+            signature: signature,
+            parameterString: pfOutput,
+            passphraseUsed: !!PAYFAST_CONFIG.passphrase,
+            fieldsInSignature: sortedKeys
+        });
+    } catch (error) {
+        console.error('Debug signature error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            stack: error.stack
+        });
+    }
+});
+
+// 12. VALIDATE PAYFAST REDIRECT
+app.get('/validate-redirect', (req, res) => {
+    try {
+        // Parse query params to see what PayFast would receive
+        const params = { ...req.query };
+
+        // Generate signature from these params
+        const generatedSignature = generatePayFastSignature(params, PAYFAST_CONFIG.passphrase);
+        const submittedSignature = params.signature || '';
+
+        const isValid = generatedSignature === submittedSignature;
+
+        res.json({
+            success: true,
+            isValid: isValid,
+            submittedSignature: submittedSignature,
+            generatedSignature: generatedSignature,
+            params: params,
+            fieldCount: Object.keys(params).length,
+            missingFields: ['merchant_id', 'merchant_key', 'amount', 'item_name', 'm_payment_id'].filter(field => !params[field])
+        });
+    } catch (error) {
+        console.error('Validate redirect error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// 13. 404 HANDLER
 app.use((req, res) => {
     res.status(404).json({ error: 'Route not found', path: req.url });
 });
@@ -950,6 +1092,7 @@ app.listen(PORT, () => {
     1. ✅ 3-step ITN validation implemented
     2. ✅ PayFast server validation (/query/validate)
     3. ✅ ITN endpoint CORS-free for reliability
+    4. ✅ FIXED: Signature generation includes ALL fields
     
     📋 API Endpoints:
     - GET  /                  - Home page
@@ -958,14 +1101,23 @@ app.listen(PORT, () => {
     - GET  /itn-test          - Test ITN endpoint
     - GET  /itn-validation-test - Test validation process
     - GET  /origin-info       - CORS debugging
-    - POST /process-payment   - Create payment
+    - GET  /validate-redirect - Validate PayFast redirect
+    - POST /debug-signature   - Debug signature generation
+    - POST /process-payment   - Create payment (FIXED)
     - POST /payfast-notify    - ITN webhook (NO CORS)
     - POST /check-status      - Check booking status
     - POST /simulate-itn      - Simulate ITN
     - POST /create-test-booking - Create test booking
     
+    🔧 SIGNATURE FIXES APPLIED:
+    • Amount is properly formatted (5.00 not R5)
+    • All fields included in signature calculation
+    • Optional fields (cell_number) included in signature
+    • Debug endpoints added for troubleshooting
+    
     ✅ Ready to receive PayFast ITN notifications!
     ✅ PayFast-compliant 3-step validation
     ✅ ITN endpoint is CORS-free (as required)
+    ✅ Signature generation fixed
     `);
 });
