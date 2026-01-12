@@ -48,71 +48,47 @@ const PAYFAST_CONFIG = {
     notifyUrl: process.env.PAYFAST_NOTIFY_URL || 'https://payfast-itn.onrender.com/payfast-notify'
 };
 
-// ✅ CORRECT: Generate PayFast signature for ONSITE (NOT alphabetical order!)
-function generateOnsiteSignature(data, passphrase = '') {
-    // CRITICAL: For Onsite, we MUST maintain the exact order from documentation
-    // Order: merchant_id, merchant_key, return_url, cancel_url, notify_url, etc.
+// ✅ CORRECT SIGNATURE FUNCTION (ALPHABETICAL ORDER - FOR ALL PAYFAST REQUESTS!)
+function generatePayFastSignature(data, passphrase = '') {
+    // Create filtered object without empty/null fields and without signature
+    const filtered = {};
 
-    let pfParamString = '';
-
-    // Define the EXACT order as per PayFast Onsite documentation
-    const fieldOrder = [
-        'merchant_id',
-        'merchant_key',
-        'return_url',
-        'cancel_url',
-        'notify_url',
-        'name_first',
-        'name_last',
-        'email_address',
-        'cell_number',
-        'm_payment_id',
-        'amount',
-        'item_name',
-        'item_description',
-        'email_confirmation',
-        'confirmation_address',
-        // Custom fields (if used)
-        'custom_str1',
-        'custom_str2',
-        'custom_str3',
-        'custom_str4',
-        'custom_str5',
-        'custom_int1',
-        'custom_int2',
-        'custom_int3',
-        'custom_int4',
-        'custom_int5'
-    ];
-
-    // Build the parameter string in EXACT order
-    for (const key of fieldOrder) {
-        if (data[key] !== undefined && data[key] !== '' && data[key] !== null) {
-            // Encode and replace %20 with + as per PayFast requirements
-            pfParamString += `${key}=${encodeURIComponent(data[key].toString().trim()).replace(/%20/g, "+")}&`;
+    for (const key in data) {
+        if (key === 'signature') continue;
+        if (data[key] !== undefined && data[key] !== null && data[key] !== '') {
+            filtered[key] = data[key];
         }
     }
 
-    // Remove the last '&'
-    pfParamString = pfParamString.slice(0, -1);
+    // ✅ ALPHABETICAL ORDER (REQUIRED by PayFast for ALL signatures)
+    const keys = Object.keys(filtered).sort();
 
-    // Add passphrase if provided
-    if (passphrase && passphrase.trim() !== '') {
-        pfParamString += `&passphrase=${encodeURIComponent(passphrase.trim()).replace(/%20/g, "+")}`;
+    let paramString = '';
+
+    // Build parameter string in alphabetical order
+    for (const key of keys) {
+        paramString += `${key}=${encodeURIComponent(filtered[key].toString().trim()).replace(/%20/g, "+")}&`;
     }
 
-    console.log('Signature input string:', pfParamString);
+    // Remove last '&'
+    paramString = paramString.slice(0, -1);
+
+    // ✅ Add passphrase ONLY for signature calculation (NOT for POST data)
+    if (passphrase && passphrase.trim() !== '') {
+        paramString += `&passphrase=${encodeURIComponent(passphrase.trim()).replace(/%20/g, "+")}`;
+    }
+
+    console.log('🔍 Signature calculation string:', paramString);
 
     // Create MD5 hash
-    const signature = crypto.createHash('md5').update(pfParamString).digest('hex');
-    console.log('Generated signature:', signature);
+    const signature = crypto.createHash('md5').update(paramString).digest('hex');
+    console.log('🔐 Generated signature:', signature);
 
     return signature;
 }
 
-// For ITN validation (this IS alphabetical)
+// For ITN validation (also alphabetical)
 function verifyITNSignature(pfData, passphrase = '') {
-    // ITN validation uses alphabetical order
     const keys = Object.keys(pfData)
         .filter(k => k !== 'signature')
         .sort();
@@ -151,12 +127,13 @@ app.get('/health', (req, res) => {
         payfast: {
             mode: PAYFAST_CONFIG.sandbox ? 'sandbox' : 'live',
             merchantId: PAYFAST_CONFIG.merchant.id ? 'configured' : 'missing',
-            key: PAYFAST_CONFIG.merchant.key ? 'configured' : 'missing'
+            key: PAYFAST_CONFIG.merchant.key ? 'configured' : 'missing',
+            passphrase: PAYFAST_CONFIG.merchant.passphrase ? 'configured' : 'not set'
         }
     });
 });
 
-// ✅ Generate Onsite Payment Identifier with correct signature
+// ✅ CORRECT: Generate Onsite Payment Identifier (SINGLE VERSION - REMOVE DUPLICATES!)
 app.post('/generate-payment-uuid', async (req, res) => {
     try {
         const {
@@ -169,7 +146,7 @@ app.post('/generate-payment-uuid', async (req, res) => {
             ticketQuantity
         } = req.body;
 
-        console.log('Received payment request:', req.body);
+        console.log('📦 Received payment request:', req.body);
 
         // Validate required fields
         if (!email_address || !name_first || !ticketQuantity) {
@@ -184,76 +161,56 @@ app.post('/generate-payment-uuid', async (req, res) => {
         const safeQuantity = Math.max(1, Math.min(parseInt(ticketQuantity) || 1, 5));
         const calculatedAmount = (PRICE_PER_TICKET * safeQuantity).toFixed(2);
 
-        console.log(`Calculated amount: R${calculatedAmount} (${safeQuantity} tickets × R${PRICE_PER_TICKET})`);
+        console.log(`💰 Calculated amount: R${calculatedAmount} (${safeQuantity} tickets × R${PRICE_PER_TICKET})`);
 
         // Generate booking ID
         const bookingId = generateBookingId();
-        const ticketNumber = 'TICKET-' + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substr(2, 6).toUpperCase();
+        const ticketNumber = 'TICKET-' + Date.now().toString(36).toUpperCase();
 
-        // Prepare PayFast payload in EXACT order as required
+        // ✅ Prepare PayFast payload (CORRECT FIELDS ONLY - no email_confirmation!)
         const payfastData = {
-            // Merchant Details (MUST be first)
             merchant_id: PAYFAST_CONFIG.merchant.id,
             merchant_key: PAYFAST_CONFIG.merchant.key,
             return_url: '', // Empty for onsite modal
             cancel_url: '', // Empty for onsite modal
             notify_url: PAYFAST_CONFIG.notifyUrl,
-
-            // Customer Details
             name_first: (name_first || '').substring(0, 100),
             name_last: (name_last || '').substring(0, 100),
             email_address: email_address.substring(0, 100),
             cell_number: (cell_number || '').substring(0, 100),
-
-            // Transaction Details
             m_payment_id: bookingId,
             amount: calculatedAmount,
             item_name: (item_name || 'Salwa Event Ticket').substring(0, 100),
             item_description: `Salwa Collective Event: ${safeQuantity} ticket(s)`.substring(0, 255),
-
-            // Custom fields
             custom_str1: eventId || '',
-            custom_str2: `Tickets: ${safeQuantity}`,
-            custom_int1: safeQuantity,
-
-            // Email confirmation
-            email_confirmation: '1',
-            confirmation_address: email_address
+            custom_int1: safeQuantity
+            // ❌ NO email_confirmation or confirmation_address for Onsite UUID!
         };
 
-        console.log('PayFast data for signature:', JSON.stringify(payfastData, null, 2));
+        console.log('📋 PayFast data for signature:', JSON.stringify(payfastData, null, 2));
 
-        // Generate signature with CORRECT order (not alphabetical!)
-        const signature = generateOnsiteSignature(payfastData, PAYFAST_CONFIG.merchant.passphrase);
+        // Generate signature with CORRECT alphabetical order
+        const signature = generatePayFastSignature(payfastData, PAYFAST_CONFIG.merchant.passphrase);
 
         // Add signature to data
-        const dataWithSignature = {
-            ...payfastData,
-            signature: signature
-        };
+        payfastData.signature = signature;
 
-        // Convert to POST string maintaining order
+        // Convert to POST string (alphabetical order for POST too)
         let pfParamString = '';
 
-        // Maintain the EXACT order
-        const fieldOrder = [
-            'merchant_id', 'merchant_key', 'return_url', 'cancel_url', 'notify_url',
-            'name_first', 'name_last', 'email_address', 'cell_number',
-            'm_payment_id', 'amount', 'item_name', 'item_description',
-            'email_confirmation', 'confirmation_address',
-            'custom_str1', 'custom_str2', 'custom_int1',
-            'signature'
-        ];
+        // Get all keys, sort alphabetically (including signature)
+        const keys = Object.keys(payfastData).sort();
 
-        for (const key of fieldOrder) {
-            if (dataWithSignature[key] !== undefined && dataWithSignature[key] !== '' && dataWithSignature[key] !== null) {
-                pfParamString += `${key}=${encodeURIComponent(dataWithSignature[key].toString().trim()).replace(/%20/g, "+")}&`;
+        for (const key of keys) {
+            if (payfastData[key] !== undefined && payfastData[key] !== '' && payfastData[key] !== null) {
+                pfParamString += `${key}=${encodeURIComponent(payfastData[key].toString().trim()).replace(/%20/g, "+")}&`;
             }
         }
         pfParamString = pfParamString.slice(0, -1);
 
-        console.log('Sending to PayFast (sandbox):', PAYFAST_CONFIG.onsiteProcessUrl);
-        console.log('Post data length:', pfParamString.length);
+        // ✅ NO PASSPHRASE IN POST DATA! Only in signature calculation
+        console.log('📤 POST string (first 500 chars):', pfParamString.substring(0, 500));
+        console.log('🚀 Sending to PayFast URL:', PAYFAST_CONFIG.onsiteProcessUrl);
 
         // Send to PayFast to get UUID
         const response = await axios.post(
@@ -268,7 +225,7 @@ app.post('/generate-payment-uuid', async (req, res) => {
             }
         );
 
-        console.log('PayFast response:', response.data);
+        console.log('✅ PayFast response:', response.data);
 
         const result = response.data;
 
@@ -331,7 +288,7 @@ app.post('/generate-payment-uuid', async (req, res) => {
                 if (match) {
                     payfastError = `${match[1]}: ${match[2]}`;
                 } else if (error.response.data.includes('Generated signature does not match')) {
-                    payfastError = 'Signature mismatch - check your passphrase and field order';
+                    payfastError = 'Signature mismatch - check passphrase and field order';
                 }
             }
 
@@ -351,7 +308,7 @@ app.post('/generate-payment-uuid', async (req, res) => {
     }
 });
 
-// PayFast ITN endpoint (alphabetical signature for ITN)
+// PayFast ITN endpoint
 app.post('/payfast-notify', async (req, res) => {
     let acknowledged = false;
 
@@ -517,15 +474,6 @@ app.post('/check-status', async (req, res) => {
             confirmedAt: bookingData.confirmedAt?.toDate?.() || bookingData.confirmedAt
         };
 
-        // Map status for frontend
-        if (response.status === 'confirmed') {
-            response.status = 'CONFIRMED';
-        } else if (response.status === 'failed') {
-            response.status = 'FAILED';
-        } else if (response.status === 'pending_payment') {
-            response.status = 'PENDING';
-        }
-
         res.json(response);
 
     } catch (error) {
@@ -542,9 +490,7 @@ app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`💰 PayFast mode: ${PAYFAST_CONFIG.sandbox ? 'SANDBOX' : 'LIVE'}`);
     console.log(`🔗 Onsite URL: ${PAYFAST_CONFIG.onsiteProcessUrl}`);
-    console.log(`📢 ITN URL: ${PAYFAST_CONFIG.notifyUrl}`);
-    console.log(`🔐 Merchant ID: ${PAYFAST_CONFIG.merchant.id ? '✓ Configured' : '✗ Missing'}`);
-    console.log(`🔑 Merchant Key: ${PAYFAST_CONFIG.merchant.key ? '✓ Configured' : '✗ Missing'}`);
-    console.log(`🗝️ Passphrase: ${PAYFAST_CONFIG.merchant.passphrase ? '✓ Configured' : '✗ Not set'}`);
-    console.log(`🏥 Health check: http://localhost:${PORT}/health`);
+    console.log(`🔐 Merchant ID: ${PAYFAST_CONFIG.merchant.id}`);
+    console.log(`📢 Health check: http://localhost:${PORT}/health`);
+    console.log(`⚠️ SECURITY: Amount fixed at R150/ticket, calculated on backend`);
 });
