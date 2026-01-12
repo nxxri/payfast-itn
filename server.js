@@ -1,6 +1,4 @@
-﻿Change your backend file(index.js) to this:
-
-
+﻿
 const express = require('express');
 const bodyParser = require('body-parser');
 const admin = require('firebase-admin');
