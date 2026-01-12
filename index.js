@@ -8,14 +8,12 @@ require('dotenv').config();
 
 const app = express();
 
-// ✅ Correct middleware order for PayFast ITN parsing
+// Middleware
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
-
-// CORS configuration
 app.use(cors({
     origin: ['https://salwacollective.co.za', 'http://localhost:3000'],
-    credentials: true // Keep this since frontend may use cookies later
+    credentials: true
 }));
 
 // Initialize Firebase Admin
@@ -27,13 +25,13 @@ try {
             credential: admin.credential.cert(serviceAccount)
         });
         firebaseInitialized = true;
-        console.log('Firebase Admin initialized from JSON string');
+        console.log('Firebase Admin initialized');
     }
 } catch (error) {
     console.error('Firebase Admin initialization error:', error.message);
 }
 
-// PayFast Configuration
+// PayFast Configuration for Onsite Payments
 const PAYFAST_CONFIG = {
     sandbox: process.env.PAYFAST_SANDBOX === 'true',
     baseUrl: process.env.PAYFAST_SANDBOX === 'true'
@@ -44,12 +42,13 @@ const PAYFAST_CONFIG = {
         key: process.env.PAYFAST_MERCHANT_KEY,
         passphrase: process.env.PAYFAST_PASSPHRASE || ''
     },
-    returnUrl: process.env.PAYFAST_RETURN_URL || 'https://salwacollective.co.za/payment-result.html',
-    cancelUrl: process.env.PAYFAST_CANCEL_URL || 'https://salwacollective.co.za/payment-result.html?cancelled=true',
+    onsiteProcessUrl: process.env.PAYFAST_SANDBOX === 'true'
+        ? 'https://sandbox.payfast.co.za/onsite/process'
+        : 'https://www.payfast.co.za/onsite/process',
     notifyUrl: process.env.PAYFAST_NOTIFY_URL || 'https://payfast-itn.onrender.com/payfast-notify'
 };
 
-// Generate PayFast signature for INITIAL payment request
+// Generate PayFast signature
 function generateSignature(data, passphrase = '') {
     let pfOutput = '';
     for (const key in data) {
@@ -64,14 +63,10 @@ function generateSignature(data, passphrase = '') {
         pfOutput += `&passphrase=${encodeURIComponent(passphrase.trim())}`;
     }
 
-    if (process.env.NODE_ENV !== 'production') {
-        console.log('Signature string (dev only):', pfOutput.substring(0, 100) + '...');
-    }
-
     return crypto.createHash('md5').update(pfOutput).digest('hex');
 }
 
-// Verify ITN signature (PayFast requires alphabetical order)
+// Verify ITN signature
 function verifyITNSignature(pfData, passphrase = '') {
     const keys = Object.keys(pfData)
         .filter(k => k !== 'signature')
@@ -97,7 +92,12 @@ function verifyITNSignature(pfData, passphrase = '') {
     return calculatedSignature === pfData.signature;
 }
 
-// ✅ Health check endpoint
+// Generate UUID for booking
+function generateBookingId() {
+    return 'BK-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9).toUpperCase();
+}
+
+// Health check endpoint
 app.get('/health', (req, res) => {
     res.json({
         status: 'healthy',
@@ -110,62 +110,96 @@ app.get('/health', (req, res) => {
     });
 });
 
-// ✅ Process payment endpoint
-app.post('/process-payment', async (req, res) => {
+// ✅ NEW: Generate Onsite Payment Identifier
+app.post('/generate-payment-uuid', async (req, res) => {
     try {
         const {
-            bookingId,
-            eventId,
-            eventName,
-            eventDate,
-            ticketNumber,
             amount,
+            item_name,
+            item_description,
+            name_first,
+            name_last,
+            email_address,
+            cell_number,
+            eventId,
             ticketQuantity,
-            customer,
             discount,
             addons,
             emergencyContact
         } = req.body;
 
         // Validate required fields
-        if (!bookingId || !amount || !customer?.email || !customer?.firstName) {
+        if (!amount || !item_name || !email_address || !name_first) {
             return res.status(400).json({
                 success: false,
-                message: 'Missing required fields'
+                message: 'Missing required fields: amount, item_name, email_address, and name_first are required'
             });
         }
 
-        const formattedAmount = parseFloat(amount).toFixed(2);
+        // Generate booking ID
+        const bookingId = generateBookingId();
+        const ticketNumber = 'TICKET-' + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substr(2, 6).toUpperCase();
 
-        // Prepare PayFast payload
+        // Prepare PayFast payload for Onsite
         const payfastData = {
             merchant_id: PAYFAST_CONFIG.merchant.id,
             merchant_key: PAYFAST_CONFIG.merchant.key,
-            return_url: `${PAYFAST_CONFIG.returnUrl}?booking_id=${bookingId}&status=success`,
-            cancel_url: `${PAYFAST_CONFIG.cancelUrl}?booking_id=${bookingId}&status=cancelled`,
+            return_url: '', // Leave empty for onsite modal
+            cancel_url: '', // Leave empty for onsite modal
             notify_url: PAYFAST_CONFIG.notifyUrl,
-            name_first: customer.firstName.substring(0, 100),
-            name_last: customer.lastName.substring(0, 100),
-            email_address: customer.email.substring(0, 100),
-            cell_number: customer.phone?.substring(0, 100) || '',
+            name_first: name_first.substring(0, 100),
+            name_last: (name_last || '').substring(0, 100),
+            email_address: email_address.substring(0, 100),
+            cell_number: (cell_number || '').substring(0, 100),
             m_payment_id: bookingId,
-            amount: formattedAmount,
-            item_name: `Salwa Event: ${eventName}`.substring(0, 100),
-            item_description: `Ticket for ${eventName} on ${eventDate}`.substring(0, 255),
-            custom_str1: eventId,
-            custom_str2: ticketNumber,
+            amount: parseFloat(amount).toFixed(2),
+            item_name: item_name.substring(0, 100),
+            item_description: (item_description || item_name).substring(0, 255),
+            custom_str1: eventId || '',
+            custom_str2: `Tickets: ${ticketQuantity || 1}`,
             custom_str3: JSON.stringify({
-                discount,
-                addons,
-                emergencyContact
+                discount: discount || null,
+                addons: addons || [],
+                emergencyContact: emergencyContact || null
             }),
-            custom_int1: ticketQuantity,
+            custom_int1: parseInt(ticketQuantity) || 1,
             email_confirmation: '1',
-            confirmation_address: customer.email
+            confirmation_address: email_address
         };
 
+        // Generate signature
         const signature = generateSignature(payfastData, PAYFAST_CONFIG.merchant.passphrase);
         payfastData.signature = signature;
+
+        // Convert to POST string
+        let pfParamString = '';
+        for (const key in payfastData) {
+            if (payfastData[key] !== undefined && payfastData[key] !== '' && payfastData[key] !== null) {
+                pfParamString += `${key}=${encodeURIComponent(payfastData[key].toString().trim())}&`;
+            }
+        }
+        pfParamString = pfParamString.slice(0, -1);
+
+        // Send to PayFast to get UUID
+        console.log('Requesting UUID from PayFast...');
+
+        const response = await axios.post(
+            PAYFAST_CONFIG.onsiteProcessUrl,
+            pfParamString,
+            {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'User-Agent': 'Salwa Collective'
+                },
+                timeout: 15000
+            }
+        );
+
+        const result = response.data;
+
+        if (!result.uuid) {
+            throw new Error('No UUID received from PayFast');
+        }
 
         // Store booking in Firestore as pending
         if (firebaseInitialized) {
@@ -173,29 +207,29 @@ app.post('/process-payment', async (req, res) => {
             const bookingRef = db.collection('bookings').doc(bookingId);
 
             await bookingRef.set({
-                // Store ALL original booking data
                 bookingId,
-                eventId,
-                eventName,
-                eventDate,
                 ticketNumber,
-                amount: formattedAmount,
-                ticketQuantity,
-                customer,
-                discount,
-                addons,
-                emergencyContact,
+                eventId,
+                eventName: item_name.replace('Salwa Event: ', ''),
+                amount: parseFloat(amount).toFixed(2),
+                ticketQuantity: ticketQuantity || 1,
+                customer: {
+                    firstName: name_first,
+                    lastName: name_last || '',
+                    email: email_address,
+                    phone: cell_number || ''
+                },
+                discount: discount || null,
+                addons: addons || [],
+                emergencyContact: emergencyContact || null,
 
-                // Payment status
+                // Payment data
                 status: 'pending_payment',
-                paymentGateway: 'payfast',
-
-                // PayFast data
+                paymentMethod: 'payfast_onsite',
                 payfastData: {
-                    amount: formattedAmount,
-                    itemName: payfastData.item_name,
+                    uuid: result.uuid,
                     signature: signature,
-                    timestamp: admin.firestore.FieldValue.serverTimestamp()
+                    amount: parseFloat(amount).toFixed(2)
                 },
 
                 // Timestamps
@@ -204,25 +238,24 @@ app.post('/process-payment', async (req, res) => {
             }, { merge: true });
         }
 
-        // Return the redirect URL
-        const redirectUrl = `${PAYFAST_CONFIG.baseUrl}/eng/process`;
-
         res.json({
             success: true,
-            redirectUrl: redirectUrl,
-            bookingId: bookingId
+            uuid: result.uuid,
+            bookingId: bookingId,
+            ticketNumber: ticketNumber
         });
 
     } catch (error) {
-        console.error('Payment processing error:', error);
+        console.error('UUID generation error:', error.response?.data || error.message);
         res.status(500).json({
             success: false,
-            message: 'Payment processing failed'
+            message: 'Failed to generate payment identifier',
+            error: error.response?.data || error.message
         });
     }
 });
 
-// ✅ PayFast ITN endpoint (CRITICAL - main validation)
+// ✅ PayFast ITN endpoint (remains the same)
 app.post('/payfast-notify', async (req, res) => {
     let acknowledged = false;
 
@@ -230,7 +263,6 @@ app.post('/payfast-notify', async (req, res) => {
         console.log(`ITN request from IP: ${req.ip || req.connection.remoteAddress}`);
         const pfData = req.body;
 
-        // Log minimal ITN data
         console.log('ITN received for booking:', pfData.m_payment_id);
         console.log('Payment status:', pfData.payment_status);
 
@@ -291,7 +323,7 @@ app.post('/payfast-notify', async (req, res) => {
         const bookingData = bookingDoc.data();
         const expectedAmount = bookingData.amount;
 
-        // 🔒 CRITICAL: Verify amount matches
+        // Verify amount matches
         const amountGross = parseFloat(pfData.amount_gross);
         const expectedAmountFloat = parseFloat(expectedAmount);
 
@@ -301,40 +333,17 @@ app.post('/payfast-notify', async (req, res) => {
             await bookingRef.update({
                 status: 'failed',
                 paymentStatus: 'AMOUNT_MISMATCH',
-                payfastResponse: {
-                    pfPaymentId: pfData.pf_payment_id,
-                    amountGross: pfData.amount_gross,
-                    amountFee: pfData.amount_fee,
-                    amountNet: pfData.amount_net,
-                    expectedAmount: expectedAmount,
-                    timestamp: new Date().toISOString()
-                },
+                payfastResponse: pfData,
                 updatedAt: admin.firestore.FieldValue.serverTimestamp()
             });
             return;
         }
 
-        // ✅ Prepare update data matching frontend expectations
+        // Prepare update data
         const updateData = {
             status: paymentStatus === 'COMPLETE' ? 'confirmed' : 'failed',
             paymentStatus: paymentStatus,
-
-            // ✅ Store full PayFast response as frontend expects
-            payfastResponse: {
-                pfPaymentId: pfData.pf_payment_id,
-                amountGross: pfData.amount_gross,
-                amountFee: pfData.amount_fee,
-                amountNet: pfData.amount_net,
-                // Include other relevant PayFast fields
-                paymentStatus: pfData.payment_status,
-                itemName: pfData.item_name,
-                itemDescription: pfData.item_description,
-                nameFirst: pfData.name_first,
-                nameLast: pfData.name_last,
-                emailAddress: pfData.email_address,
-                timestamp: new Date().toISOString()
-            },
-
+            payfastResponse: pfData,
             updatedAt: admin.firestore.FieldValue.serverTimestamp()
         };
 
@@ -342,11 +351,6 @@ app.post('/payfast-notify', async (req, res) => {
         if (paymentStatus === 'COMPLETE') {
             updateData.confirmedAt = admin.firestore.FieldValue.serverTimestamp();
             updateData.confirmedAmount = pfData.amount_gross;
-
-            // Update signature
-            await bookingRef.update({
-                'payfastData.signature': pfData.signature
-            });
         }
 
         await bookingRef.update(updateData);
@@ -361,7 +365,7 @@ app.post('/payfast-notify', async (req, res) => {
     }
 });
 
-// ✅ CHECK-STATUS ENDPOINT (CRITICAL - must match frontend expectations)
+// ✅ Check status endpoint
 app.post('/check-status', async (req, res) => {
     try {
         const { bookingId } = req.body;
@@ -393,7 +397,6 @@ app.post('/check-status', async (req, res) => {
 
         const bookingData = bookingDoc.data();
 
-        // ✅ Return EXACT format that frontend expects
         const response = {
             success: true,
             bookingId: bookingId,
@@ -402,21 +405,9 @@ app.post('/check-status', async (req, res) => {
             amount: bookingData.amount,
             ticketNumber: bookingData.ticketNumber,
             eventName: bookingData.eventName,
-            eventDate: bookingData.eventDate,
             ticketQuantity: bookingData.ticketQuantity,
-
-            // ✅ Include customer data as frontend expects
-            customer: {
-                email: bookingData.customer?.email,
-                firstName: bookingData.customer?.firstName,
-                lastName: bookingData.customer?.lastName,
-                phone: bookingData.customer?.phone
-            },
-
-            // ✅ Include payfastResponse exactly as stored
+            customer: bookingData.customer,
             payfastResponse: bookingData.payfastResponse || null,
-
-            // Timestamps
             createdAt: bookingData.createdAt?.toDate?.() || bookingData.createdAt,
             confirmedAt: bookingData.confirmedAt?.toDate?.() || bookingData.confirmedAt
         };
@@ -441,66 +432,10 @@ app.post('/check-status', async (req, res) => {
     }
 });
 
-// ✅ Payment return handler
-app.get('/payment-return', async (req, res) => {
-    try {
-        const { booking_id, status } = req.query;
-
-        if (!booking_id) {
-            return res.redirect('https://salwacollective.co.za/payment-result.html?error=no_booking_id');
-        }
-
-        const redirectUrl = `https://salwacollective.co.za/payment-result.html?booking_id=${booking_id}&status=${status}`;
-        res.redirect(redirectUrl);
-
-    } catch (error) {
-        console.error('Payment return error:', error);
-        res.redirect('https://salwacollective.co.za/payment-result.html?error=server_error');
-    }
-});
-
-// ✅ Get booking by ID (optional, for admin/testing)
-app.get('/booking/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-
-        if (!firebaseInitialized) {
-            return res.status(500).json({
-                success: false,
-                message: 'Database not available'
-            });
-        }
-
-        const db = admin.firestore();
-        const bookingRef = db.collection('bookings').doc(id);
-        const bookingDoc = await bookingRef.get();
-
-        if (!bookingDoc.exists) {
-            return res.status(404).json({
-                success: false,
-                message: 'Booking not found'
-            });
-        }
-
-        res.json({
-            success: true,
-            booking: bookingDoc.data()
-        });
-
-    } catch (error) {
-        console.error('Get booking error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Error fetching booking'
-        });
-    }
-});
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`PayFast mode: ${PAYFAST_CONFIG.sandbox ? 'SANDBOX' : 'LIVE'}`);
+    console.log(`Onsite payment URL: ${PAYFAST_CONFIG.onsiteProcessUrl}`);
     console.log(`Health check: http://localhost:${PORT}/health`);
-    console.log(`ITN endpoint: ${PAYFAST_CONFIG.notifyUrl}`);
-    console.log(`Check-status endpoint: POST http://localhost:${PORT}/check-status`);
 });
