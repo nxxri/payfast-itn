@@ -31,24 +31,26 @@ try {
     console.error('Firebase Admin initialization error:', error.message);
 }
 
-// PayFast Configuration for Onsite Payments
+// PayFast Configuration for Redirect Payments
 const PAYFAST_CONFIG = {
     sandbox: process.env.PAYFAST_SANDBOX === 'true',
-    baseUrl: process.env.PAYFAST_SANDBOX === 'true'
-        ? 'https://sandbox.payfast.co.za'
-        : 'https://www.payfast.co.za',
+    processUrl: process.env.PAYFAST_SANDBOX === 'true'
+        ? 'https://sandbox.payfast.co.za/eng/process'
+        : 'https://www.payfast.co.za/eng/process',
+    validateUrl: process.env.PAYFAST_SANDBOX === 'true'
+        ? 'https://sandbox.payfast.co.za/eng/query/validate'
+        : 'https://www.payfast.co.za/eng/query/validate',
     merchant: {
         id: process.env.PAYFAST_MERCHANT_ID,
         key: process.env.PAYFAST_MERCHANT_KEY,
         passphrase: process.env.PAYFAST_PASSPHRASE || ''
     },
-    onsiteProcessUrl: process.env.PAYFAST_SANDBOX === 'true'
-        ? 'https://sandbox.payfast.co.za/onsite/process'
-        : 'https://www.payfast.co.za/onsite/process',
+    returnUrl: process.env.PAYFAST_RETURN_URL || 'https://salwacollective.co.za/Upcoming-Events.html',
+    cancelUrl: process.env.PAYFAST_CANCEL_URL || 'https://salwacollective.co.za/Upcoming-Events.html',
     notifyUrl: process.env.PAYFAST_NOTIFY_URL || 'https://payfast-itn.onrender.com/payfast-notify'
 };
 
-// ✅ CORRECT SIGNATURE FUNCTION (ALPHABETICAL ORDER - FOR ALL PAYFAST REQUESTS!)
+// ✅ CORRECT SIGNATURE FUNCTION (PayFast Documentation Order - NOT alphabetical!)
 function generatePayFastSignature(data, passphrase = '') {
     // Create filtered object without empty/null fields and without signature
     const filtered = {};
@@ -60,20 +62,51 @@ function generatePayFastSignature(data, passphrase = '') {
         }
     }
 
-    // ✅ ALPHABETICAL ORDER (REQUIRED by PayFast for ALL signatures)
-    const keys = Object.keys(filtered).sort();
+    // ✅ IMPORTANT: PayFast documentation order (NOT alphabetical)
+    // Order as per documentation: merchant details, customer details, transaction details, etc.
+    // We'll build the parameter string by adding fields in the documented order
 
     let paramString = '';
 
-    // Build parameter string in alphabetical order
-    for (const key of keys) {
-        paramString += `${key}=${encodeURIComponent(filtered[key].toString().trim()).replace(/%20/g, "+")}&`;
-    }
+    // Add fields in the order they appear in PayFast documentation
+    // Merchant details first
+    if (filtered.merchant_id) paramString += `merchant_id=${encodeURIComponent(filtered.merchant_id.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.merchant_key) paramString += `merchant_key=${encodeURIComponent(filtered.merchant_key.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.return_url) paramString += `return_url=${encodeURIComponent(filtered.return_url.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.cancel_url) paramString += `cancel_url=${encodeURIComponent(filtered.cancel_url.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.notify_url) paramString += `notify_url=${encodeURIComponent(filtered.notify_url.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.name_first) paramString += `name_first=${encodeURIComponent(filtered.name_first.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.name_last) paramString += `name_last=${encodeURIComponent(filtered.name_last.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.email_address) paramString += `email_address=${encodeURIComponent(filtered.email_address.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.cell_number) paramString += `cell_number=${encodeURIComponent(filtered.cell_number.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.m_payment_id) paramString += `m_payment_id=${encodeURIComponent(filtered.m_payment_id.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.amount) paramString += `amount=${encodeURIComponent(filtered.amount.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.item_name) paramString += `item_name=${encodeURIComponent(filtered.item_name.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.item_description) paramString += `item_description=${encodeURIComponent(filtered.item_description.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.email_confirmation) paramString += `email_confirmation=${encodeURIComponent(filtered.email_confirmation.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.confirmation_address) paramString += `confirmation_address=${encodeURIComponent(filtered.confirmation_address.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.payment_method) paramString += `payment_method=${encodeURIComponent(filtered.payment_method.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.subscription_type) paramString += `subscription_type=${encodeURIComponent(filtered.subscription_type.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.billing_date) paramString += `billing_date=${encodeURIComponent(filtered.billing_date.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.recurring_amount) paramString += `recurring_amount=${encodeURIComponent(filtered.recurring_amount.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.frequency) paramString += `frequency=${encodeURIComponent(filtered.frequency.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.cycles) paramString += `cycles=${encodeURIComponent(filtered.cycles.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.custom_str1) paramString += `custom_str1=${encodeURIComponent(filtered.custom_str1.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.custom_str2) paramString += `custom_str2=${encodeURIComponent(filtered.custom_str2.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.custom_str3) paramString += `custom_str3=${encodeURIComponent(filtered.custom_str3.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.custom_str4) paramString += `custom_str4=${encodeURIComponent(filtered.custom_str4.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.custom_str5) paramString += `custom_str5=${encodeURIComponent(filtered.custom_str5.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.custom_int1) paramString += `custom_int1=${encodeURIComponent(filtered.custom_int1.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.custom_int2) paramString += `custom_int2=${encodeURIComponent(filtered.custom_int2.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.custom_int3) paramString += `custom_int3=${encodeURIComponent(filtered.custom_int3.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.custom_int4) paramString += `custom_int4=${encodeURIComponent(filtered.custom_int4.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.custom_int5) paramString += `custom_int5=${encodeURIComponent(filtered.custom_int5.toString().trim()).replace(/%20/g, "+")}&`;
+    if (filtered.fica_idnumber) paramString += `fica_idnumber=${encodeURIComponent(filtered.fica_idnumber.toString().trim()).replace(/%20/g, "+")}&`;
 
     // Remove last '&'
     paramString = paramString.slice(0, -1);
 
-    // ✅ Add passphrase ONLY for signature calculation (NOT for POST data)
+    // ✅ Add passphrase ONLY for signature calculation
     if (passphrase && passphrase.trim() !== '') {
         paramString += `&passphrase=${encodeURIComponent(passphrase.trim()).replace(/%20/g, "+")}`;
     }
@@ -87,18 +120,35 @@ function generatePayFastSignature(data, passphrase = '') {
     return signature;
 }
 
-// For ITN validation (also alphabetical)
+// For ITN validation (same order as documentation)
 function verifyITNSignature(pfData, passphrase = '') {
-    const keys = Object.keys(pfData)
-        .filter(k => k !== 'signature')
-        .sort();
-
     let pfParamString = '';
-    for (const key of keys) {
-        if (pfData[key] !== undefined && pfData[key] !== '' && pfData[key] !== null) {
-            pfParamString += `${key}=${encodeURIComponent(pfData[key].toString().trim()).replace(/%20/g, "+")}&`;
-        }
-    }
+
+    // Build parameter string in the order fields appear
+    if (pfData.m_payment_id) pfParamString += `m_payment_id=${encodeURIComponent(pfData.m_payment_id.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.pf_payment_id) pfParamString += `pf_payment_id=${encodeURIComponent(pfData.pf_payment_id.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.payment_status) pfParamString += `payment_status=${encodeURIComponent(pfData.payment_status.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.item_name) pfParamString += `item_name=${encodeURIComponent(pfData.item_name.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.item_description) pfParamString += `item_description=${encodeURIComponent(pfData.item_description.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.amount_gross) pfParamString += `amount_gross=${encodeURIComponent(pfData.amount_gross.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.amount_fee) pfParamString += `amount_fee=${encodeURIComponent(pfData.amount_fee.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.amount_net) pfParamString += `amount_net=${encodeURIComponent(pfData.amount_net.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.custom_str1) pfParamString += `custom_str1=${encodeURIComponent(pfData.custom_str1.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.custom_str2) pfParamString += `custom_str2=${encodeURIComponent(pfData.custom_str2.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.custom_str3) pfParamString += `custom_str3=${encodeURIComponent(pfData.custom_str3.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.custom_str4) pfParamString += `custom_str4=${encodeURIComponent(pfData.custom_str4.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.custom_str5) pfParamString += `custom_str5=${encodeURIComponent(pfData.custom_str5.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.custom_int1) pfParamString += `custom_int1=${encodeURIComponent(pfData.custom_int1.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.custom_int2) pfParamString += `custom_int2=${encodeURIComponent(pfData.custom_int2.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.custom_int3) pfParamString += `custom_int3=${encodeURIComponent(pfData.custom_int3.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.custom_int4) pfParamString += `custom_int4=${encodeURIComponent(pfData.custom_int4.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.custom_int5) pfParamString += `custom_int5=${encodeURIComponent(pfData.custom_int5.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.name_first) pfParamString += `name_first=${encodeURIComponent(pfData.name_first.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.name_last) pfParamString += `name_last=${encodeURIComponent(pfData.name_last.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.email_address) pfParamString += `email_address=${encodeURIComponent(pfData.email_address.toString().trim()).replace(/%20/g, "+")}&`;
+    if (pfData.merchant_id) pfParamString += `merchant_id=${encodeURIComponent(pfData.merchant_id.toString().trim()).replace(/%20/g, "+")}&`;
+
+    // Remove last '&'
     pfParamString = pfParamString.slice(0, -1);
 
     if (passphrase && passphrase.trim() !== '') {
@@ -109,6 +159,10 @@ function verifyITNSignature(pfData, passphrase = '') {
         .createHash('md5')
         .update(pfParamString)
         .digest('hex');
+
+    console.log('ITN Verification:');
+    console.log('Expected signature:', pfData.signature);
+    console.log('Calculated signature:', calculatedSignature);
 
     return calculatedSignature === pfData.signature;
 }
@@ -133,8 +187,8 @@ app.get('/health', (req, res) => {
     });
 });
 
-// ✅ CORRECT: Generate Onsite Payment Identifier (SINGLE VERSION - REMOVE DUPLICATES!)
-app.post('/generate-payment-uuid', async (req, res) => {
+// ✅ NEW: Generate PayFast Payment Form Data
+app.post('/generate-payment-form', async (req, res) => {
     try {
         const {
             item_name,
@@ -167,71 +221,41 @@ app.post('/generate-payment-uuid', async (req, res) => {
         const bookingId = generateBookingId();
         const ticketNumber = 'TICKET-' + Date.now().toString(36).toUpperCase();
 
-        // ✅ Prepare PayFast payload (CORRECT FIELDS ONLY - no email_confirmation!)
+        // ✅ Prepare PayFast payload as per documentation
         const payfastData = {
+            // Merchant details
             merchant_id: PAYFAST_CONFIG.merchant.id,
             merchant_key: PAYFAST_CONFIG.merchant.key,
-            return_url: '', // Empty for onsite modal
-            cancel_url: '', // Empty for onsite modal
+            return_url: PAYFAST_CONFIG.returnUrl,
+            cancel_url: PAYFAST_CONFIG.cancelUrl,
             notify_url: PAYFAST_CONFIG.notifyUrl,
+
+            // Customer details
             name_first: (name_first || '').substring(0, 100),
             name_last: (name_last || '').substring(0, 100),
             email_address: email_address.substring(0, 100),
             cell_number: (cell_number || '').substring(0, 100),
+
+            // Transaction details
             m_payment_id: bookingId,
             amount: calculatedAmount,
             item_name: (item_name || 'Salwa Event Ticket').substring(0, 100),
             item_description: `Salwa Collective Event: ${safeQuantity} ticket(s)`.substring(0, 255),
+            email_confirmation: '1',
+            confirmation_address: email_address.substring(0, 100),
+
+            // Custom fields for tracking
             custom_str1: eventId || '',
             custom_int1: safeQuantity
-            // ❌ NO email_confirmation or confirmation_address for Onsite UUID!
         };
 
         console.log('📋 PayFast data for signature:', JSON.stringify(payfastData, null, 2));
 
-        // Generate signature with CORRECT alphabetical order
+        // Generate signature with PayFast documentation order
         const signature = generatePayFastSignature(payfastData, PAYFAST_CONFIG.merchant.passphrase);
 
         // Add signature to data
         payfastData.signature = signature;
-
-        // Convert to POST string (alphabetical order for POST too)
-        let pfParamString = '';
-
-        // Get all keys, sort alphabetically (including signature)
-        const keys = Object.keys(payfastData).sort();
-
-        for (const key of keys) {
-            if (payfastData[key] !== undefined && payfastData[key] !== '' && payfastData[key] !== null) {
-                pfParamString += `${key}=${encodeURIComponent(payfastData[key].toString().trim()).replace(/%20/g, "+")}&`;
-            }
-        }
-        pfParamString = pfParamString.slice(0, -1);
-
-        // ✅ NO PASSPHRASE IN POST DATA! Only in signature calculation
-        console.log('📤 POST string (first 500 chars):', pfParamString.substring(0, 500));
-        console.log('🚀 Sending to PayFast URL:', PAYFAST_CONFIG.onsiteProcessUrl);
-
-        // Send to PayFast to get UUID
-        const response = await axios.post(
-            PAYFAST_CONFIG.onsiteProcessUrl,
-            pfParamString,
-            {
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'User-Agent': 'Salwa Collective'
-                },
-                timeout: 20000
-            }
-        );
-
-        console.log('✅ PayFast response:', response.data);
-
-        const result = response.data;
-
-        if (!result.uuid) {
-            throw new Error('No UUID received from PayFast');
-        }
 
         // Store booking in Firestore as pending
         if (firebaseInitialized) {
@@ -252,11 +276,10 @@ app.post('/generate-payment-uuid', async (req, res) => {
                     phone: cell_number || ''
                 },
                 status: 'pending_payment',
-                paymentMethod: 'payfast_onsite',
+                paymentMethod: 'payfast_redirect',
                 payfastData: {
-                    uuid: result.uuid,
-                    signature: signature,
-                    amount: calculatedAmount
+                    amount: calculatedAmount,
+                    signature: signature
                 },
                 calculatedAmount: calculatedAmount,
                 pricePerTicket: PRICE_PER_TICKET,
@@ -267,42 +290,18 @@ app.post('/generate-payment-uuid', async (req, res) => {
 
         res.json({
             success: true,
-            uuid: result.uuid,
             bookingId: bookingId,
             ticketNumber: ticketNumber,
-            calculatedAmount: calculatedAmount
+            calculatedAmount: calculatedAmount,
+            payfastData: payfastData,
+            processUrl: PAYFAST_CONFIG.processUrl
         });
 
     } catch (error) {
-        console.error('❌ UUID generation error:', error.message);
-
-        if (error.response) {
-            console.error('Response status:', error.response.status);
-            console.error('Response data:', error.response.data);
-
-            // Try to extract error message from PayFast HTML response
-            let payfastError = 'Unknown PayFast error';
-            if (error.response.data && typeof error.response.data === 'string') {
-                // Try to extract error from HTML
-                const match = error.response.data.match(/<strong>([^<]+):<\/strong>\s*([^<]+)/);
-                if (match) {
-                    payfastError = `${match[1]}: ${match[2]}`;
-                } else if (error.response.data.includes('Generated signature does not match')) {
-                    payfastError = 'Signature mismatch - check passphrase and field order';
-                }
-            }
-
-            return res.status(400).json({
-                success: false,
-                message: 'PayFast rejected the request',
-                error: payfastError,
-                details: error.response.data
-            });
-        }
-
+        console.error('❌ Payment form generation error:', error.message);
         res.status(500).json({
             success: false,
-            message: 'Failed to generate payment identifier',
+            message: 'Failed to generate payment form',
             error: error.message
         });
     }
@@ -318,7 +317,7 @@ app.post('/payfast-notify', async (req, res) => {
 
         console.log('ITN data:', pfData);
 
-        // 1. Verify signature (alphabetical for ITN)
+        // 1. Verify signature
         if (!verifyITNSignature(pfData, PAYFAST_CONFIG.merchant.passphrase)) {
             console.error('ITN signature mismatch');
             if (!acknowledged) {
@@ -328,12 +327,19 @@ app.post('/payfast-notify', async (req, res) => {
             return;
         }
 
-        // ✅ REQUIRED: Validate with PayFast
+        // 2. Validate with PayFast
         try {
-            const validationUrl = `${PAYFAST_CONFIG.baseUrl}/eng/query/validate`;
+            let validateParamString = '';
+            for (let key in pfData) {
+                if (pfData[key] !== '' && key !== 'signature') {
+                    validateParamString += `${key}=${encodeURIComponent(pfData[key].toString().trim()).replace(/%20/g, "+")}&`;
+                }
+            }
+            validateParamString = validateParamString.slice(0, -1);
+
             const validationResponse = await axios.post(
-                validationUrl,
-                qs.stringify(pfData),
+                PAYFAST_CONFIG.validateUrl,
+                validateParamString,
                 {
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     timeout: 10000
@@ -357,13 +363,13 @@ app.post('/payfast-notify', async (req, res) => {
             return;
         }
 
-        // ✅ Send 200 immediately to PayFast
+        // 3. Send 200 immediately to PayFast
         if (!acknowledged) {
             res.status(200).send('OK');
             acknowledged = true;
         }
 
-        // Process the payment
+        // 4. Process the payment
         const bookingId = pfData.m_payment_id;
         const paymentStatus = pfData.payment_status;
 
@@ -485,11 +491,38 @@ app.post('/check-status', async (req, res) => {
     }
 });
 
+// Return URL handler (optional)
+app.post('/payment-return', async (req, res) => {
+    try {
+        const { m_payment_id } = req.body;
+
+        if (m_payment_id) {
+            // You can redirect to a success page or return JSON
+            res.json({
+                success: true,
+                message: 'Payment return received',
+                bookingId: m_payment_id
+            });
+        } else {
+            res.json({
+                success: false,
+                message: 'No payment ID received'
+            });
+        }
+    } catch (error) {
+        console.error('Payment return error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error processing return'
+        });
+    }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`💰 PayFast mode: ${PAYFAST_CONFIG.sandbox ? 'SANDBOX' : 'LIVE'}`);
-    console.log(`🔗 Onsite URL: ${PAYFAST_CONFIG.onsiteProcessUrl}`);
+    console.log(`🔗 Process URL: ${PAYFAST_CONFIG.processUrl}`);
     console.log(`🔐 Merchant ID: ${PAYFAST_CONFIG.merchant.id}`);
     console.log(`📢 Health check: http://localhost:${PORT}/health`);
     console.log(`⚠️ SECURITY: Amount fixed at R150/ticket, calculated on backend`);
