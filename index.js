@@ -24,19 +24,22 @@ admin.initializeApp({
 const db = admin.firestore();
 
 // ========================
-// 3️⃣ START BOOKING ROUTE (KEPT AS /bookings)
+// 3️⃣ START BOOKING ROUTE
 // ========================
 app.post("/bookings", async (req, res) => {
     try {
         console.log("Received booking request:", JSON.stringify(req.body, null, 2));
 
-        // Extract ALL fields from frontend
+        // Extract data - handle both formats from frontend
         const {
             eventId,
             eventName,
             eventDate,
             eventLocation,
             eventCity,
+            // Frontend sends customer object
+            customer,
+            // Also accept flat fields for backward compatibility
             userName,
             userEmail,
             userPhone,
@@ -50,7 +53,48 @@ app.post("/bookings", async (req, res) => {
             discountAmount
         } = req.body;
 
-        // Validate required fields
+        // 🚨 CRITICAL FIX: Handle customer data properly
+        let customerData = {};
+
+        if (customer && typeof customer === 'object') {
+            // Frontend sends customer object (your current format)
+            customerData = {
+                name: customer.name ? String(customer.name).trim() : '',
+                email: customer.email ? String(customer.email).trim() : '',
+                phone: customer.phone ? String(customer.phone).trim() : '',
+                emergencyContact: {
+                    name: customer.emergencyContact?.name ? String(customer.emergencyContact.name).trim() : '',
+                    phone: customer.emergencyContact?.phone ? String(customer.emergencyContact.phone).trim() : ''
+                }
+            };
+        } else {
+            // For backward compatibility
+            customerData = {
+                name: userName ? String(userName).trim() : '',
+                email: userEmail ? String(userEmail).trim() : '',
+                phone: userPhone ? String(userPhone).trim() : '',
+                emergencyContact: {
+                    name: emergencyContactName ? String(emergencyContactName).trim() : '',
+                    phone: emergencyContactPhone ? String(emergencyContactPhone).trim() : ''
+                }
+            };
+        }
+
+        // 🚨 VALIDATION: Ensure all required customer fields exist
+        if (!customerData.name || customerData.name.length < 2) {
+            return res.status(400).json({
+                success: false,
+                error: "Valid customer name is required (minimum 2 characters)"
+            });
+        }
+
+        if (!customerData.email || !customerData.email.includes('@')) {
+            return res.status(400).json({
+                success: false,
+                error: "Valid customer email is required"
+            });
+        }
+
         if (!eventId) {
             return res.status(400).json({
                 success: false,
@@ -62,20 +106,6 @@ app.post("/bookings", async (req, res) => {
             return res.status(400).json({
                 success: false,
                 error: "Invalid ticket quantity"
-            });
-        }
-
-        if (!userEmail || !userEmail.includes('@')) {
-            return res.status(400).json({
-                success: false,
-                error: "Valid email is required"
-            });
-        }
-
-        if (!userName || userName.trim().length < 2) {
-            return res.status(400).json({
-                success: false,
-                error: "Valid name is required"
             });
         }
 
@@ -98,7 +128,7 @@ app.post("/bookings", async (req, res) => {
                 throw new Error("This event is not currently active");
             }
 
-            // Check capacity/tickets (using ticketsRemaining or capacity field)
+            // Check capacity
             const ticketsRemaining = event.ticketsRemaining || event.capacity || 30;
             const bookedSpots = event.bookedSpots || 0;
 
@@ -106,25 +136,22 @@ app.post("/bookings", async (req, res) => {
                 throw new Error(`Only ${ticketsRemaining - bookedSpots} tickets remaining`);
             }
 
-            // Calculate total amount - use frontend totalAmount if provided
-            // Otherwise calculate from ticketBasePrice or event price
+            // Calculate total amount
             if (totalAmount && typeof totalAmount === 'number') {
                 finalTotalAmount = totalAmount;
             } else {
-                // Extract price from event data
                 const eventPrice = event.priceNumber ||
                     (event.price ? parseFloat(event.price.replace('R', '')) : 150) ||
                     150;
                 finalTotalAmount = eventPrice * ticketQuantity;
 
-                // Apply discount if provided
                 if (discountAmount && discountAmount > 0) {
                     finalTotalAmount -= discountAmount;
                     if (finalTotalAmount < 0) finalTotalAmount = 0;
                 }
             }
 
-            // Update event tickets/capacity
+            // Update event capacity
             const updateData = {};
             if (event.ticketsRemaining !== undefined) {
                 updateData.ticketsRemaining = event.ticketsRemaining - ticketQuantity;
@@ -141,7 +168,7 @@ app.post("/bookings", async (req, res) => {
             const bookingDoc = bookingsRef.doc();
             bookingId = bookingDoc.id;
 
-            // Clean addons array - remove null/undefined values
+            // Clean addons array
             const cleanAddons = Array.isArray(addons)
                 ? addons.filter(addon => addon != null && addon !== undefined && addon !== "None")
                 : [];
@@ -157,8 +184,7 @@ app.post("/bookings", async (req, res) => {
                 };
             }
 
-            // Prepare booking data
-            // Prepare booking data
+            // 🚨 CRITICAL FIX: Prepare booking data with PROPER customer structure
             const bookingData = {
                 eventId,
                 eventName: eventName || event.title || '',
@@ -166,40 +192,42 @@ app.post("/bookings", async (req, res) => {
                 eventLocation: eventLocation || event.location || '',
                 eventCity: eventCity || event.city || '',
 
-                // FIX: Ensure all customer fields exist
+                // ✅ CORRECT: customer object with guaranteed non-empty values
                 customer: {
-                    name: userName ? userName.trim() : '',
-                    email: userEmail ? userEmail.trim() : '',
-                    phone: userPhone ? userPhone.trim() : '',
+                    name: customerData.name || '',
+                    email: customerData.email || '',
+                    phone: customerData.phone || '',
                     emergencyContact: {
-                        name: emergencyContactName ? emergencyContactName.trim() : '',
-                        phone: emergencyContactPhone ? emergencyContactPhone.trim() : ''
+                        name: customerData.emergencyContact?.name || '',
+                        phone: customerData.emergencyContact?.phone || ''
                     }
                 },
 
-                ticketQuantity,
-                ticketBasePrice: ticketBasePrice || 150,
+                ticketQuantity: Number(ticketQuantity) || 1,
+                ticketBasePrice: Number(ticketBasePrice) || 150,
                 addons: cleanAddons,
                 discount: cleanDiscount,
-                discountAmount: discountAmount || 0,
-                totalAmount: finalTotalAmount,
+                discountAmount: Number(discountAmount) || 0,
+                totalAmount: Number(finalTotalAmount),
                 paymentMethod: "payfast",
                 status: "PENDING",
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
                 updatedAt: admin.firestore.FieldValue.serverTimestamp()
             };
 
-            // Remove emergencyContact object if both fields are empty
+            // ✅ Ensure no undefined values in emergencyContact
             if (!bookingData.customer.emergencyContact.name && !bookingData.customer.emergencyContact.phone) {
-                bookingData.customer.emergencyContact = null; // Set to null instead of deleting
+                bookingData.customer.emergencyContact = null;
             }
+
+            console.log("Saving to Firestore:", JSON.stringify(bookingData, null, 2));
             tx.set(bookingDoc, bookingData);
 
             console.log(`Booking created: ${bookingId} for event: ${eventId}`);
         });
 
         // Prepare PayFast parameters
-        const nameParts = userName.trim().split(" ");
+        const nameParts = customerData.name.trim().split(" ");
         const firstName = nameParts[0] || "";
         const lastName = nameParts.slice(1).join(" ") || "";
 
@@ -215,8 +243,8 @@ app.post("/bookings", async (req, res) => {
             m_payment_id: bookingId,
             name_first: firstName,
             name_last: lastName,
-            email_address: userEmail.trim(),
-            cell_number: userPhone ? userPhone.trim().replace(/\D/g, '') : ''
+            email_address: customerData.email.trim(),
+            cell_number: customerData.phone ? customerData.phone.trim().replace(/\D/g, '') : ''
         };
 
         // Remove empty parameters
@@ -311,8 +339,6 @@ app.post("/payfast-itn", async (req, res) => {
         });
 
         console.log(`✅ Booking ${data.m_payment_id} marked as PAID`);
-
-        // Optional: Send confirmation email or other post-payment actions here
 
     } catch (err) {
         console.error("Error updating booking:", err);
