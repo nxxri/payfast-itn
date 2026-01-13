@@ -1,111 +1,169 @@
-﻿
-const express = require('express');
-const bodyParser = require('body-parser');
-const admin = require('firebase-admin');
-const axios = require('axios');
-const querystring = require('querystring');
-const crypto = require('crypto');
+﻿// ========================
+// 1️⃣ BASIC SETUP
+// ========================
+const express = require("express");
+const cors = require("cors");
+const admin = require("firebase-admin");
+const crypto = require("crypto");
 
 const app = express();
-app.use(bodyParser.urlencoded({ extended: false }));
+app.use(cors()); // allow frontend
+app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
-// Firebase init
-const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
+// ========================
+// 2️⃣ FIREBASE INIT
+// ========================
 admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
+    credential: admin.credential.cert(
+        JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
+    )
 });
+
 const db = admin.firestore();
 
-const BOOKINGS_COLLECTION = 'bookings';
-const MERCHANT_ID = process.env.PAYFAST_MERCHANT_ID;
-const PASSPHRASE = process.env.PAYFAST_PASSPHRASE;
-
-// PayFast URLs
-const PAYFAST_VALIDATE_URL =
-    process.env.PAYFAST_SANDBOX === 'true'
-        ? 'https://sandbox.payfast.co.za/eng/query/validate'
-        : 'https://www.payfast.co.za/eng/query/validate';
-
-//Build PayFast signature string
-
-function buildSignature(data) {
-    const filtered = Object.keys(data)
-        .filter(key => key !== 'signature' && data[key] !== '')
-        .sort()
-        .map(key => `${key}=${encodeURIComponent(data[key].trim()).replace(/%20/g, '+')}`)
-        .join('&');
-
-    const stringToHash = PASSPHRASE
-        ? `${filtered}&passphrase=${encodeURIComponent(PASSPHRASE)}`
-        : filtered;
-
-    return crypto.createHash('md5').update(stringToHash).digest('hex');
-}
-
-//PayFast ITN endpoint
-app.post('/payfast/itn', async (req, res) => {
-    const data = req.body;
-
+// ========================
+// 3️⃣ START BOOKING ROUTE
+// ========================
+app.post("/start-booking", async (req, res) => {
     try {
-        // Merchant validation
-        if (data.merchant_id !== MERCHANT_ID) {
-            console.error('Invalid merchant ID');
-            return res.status(200).send('Invalid merchant');
+        const {
+            eventId,
+            ticketQuantity,
+            userName,
+            userEmail,
+            userPhone
+        } = req.body;
+
+        if (!eventId || !ticketQuantity || !userEmail) {
+            return res.status(400).json({ error: "Missing data" });
         }
 
-        // Signature validation
-        const calculatedSignature = buildSignature(data);
-        if (calculatedSignature !== data.signature) {
-            console.error('Signature mismatch');
-            return res.status(200).send('Invalid signature');
-        }
+        const eventRef = db.collection("events").doc(eventId);
+        const bookingsRef = db.collection("bookings");
 
-        // Validate with PayFast
-        const pfResponse = await axios.post(
-            PAYFAST_VALIDATE_URL,
-            querystring.stringify(data),
-            { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-        );
+        let bookingId;
+        let totalAmount;
 
-        if (pfResponse.data !== 'VALID') {
-            console.error('PayFast validation failed');
-            return res.status(200).send('Invalid ITN');
-        }
+        // Transaction to safely decrement tickets and create booking
+        await db.runTransaction(async (tx) => {
+            const eventSnap = await tx.get(eventRef);
+            if (!eventSnap.exists) throw new Error("Event not found");
 
-        // Booking verification
-        const bookingId = data.m_payment_id;
-        const bookingRef = db.collection(BOOKINGS_COLLECTION).doc(bookingId);
-        const bookingSnap = await bookingRef.get();
+            const event = eventSnap.data();
 
-        if (!bookingSnap.exists) {
-            console.error('Booking not found');
-            return res.status(200).send('Booking missing');
-        }
+            if (!event.active) throw new Error("Event inactive");
+            if (event.ticketsRemaining < ticketQuantity)
+                throw new Error("Not enough tickets");
 
-        const booking = bookingSnap.data();
+            totalAmount = event.priceNumber * ticketQuantity;
 
-        if (Number(booking.amount) !== Number(data.amount_gross)) {
-            console.error('Amount mismatch');
-            return res.status(200).send('Amount mismatch');
-        }
+            // Reserve tickets immediately
+            tx.update(eventRef, {
+                ticketsRemaining: event.ticketsRemaining - ticketQuantity
+            });
 
-        // Update booking
-        await bookingRef.update({
-            status: 'paid',
-            payfast_payment_id: data.pf_payment_id,
-            payer_email: data.email_address,
-            paid_at: admin.firestore.FieldValue.serverTimestamp(),
+            // Create booking in Firestore
+            const bookingDoc = bookingsRef.doc();
+            bookingId = bookingDoc.id;
+
+            tx.set(bookingDoc, {
+                eventId,
+                eventName: event.title,
+                eventLocation: event.location,
+                userName,
+                userEmail,
+                userPhone,
+                ticketQuantity,
+                totalAmount,
+                paymentMethod: "payfast",
+                status: "PENDING",
+                createdAt: admin.firestore.FieldValue.serverTimestamp()
+            });
         });
 
-        console.log(`Payment verified for booking ${bookingId}`);
-        res.status(200).send('OK');
+        // Split userName into first & last name
+        const nameParts = userName.trim().split(" ");
+        const firstName = nameParts[0] || "";
+        const lastName = nameParts.slice(1).join(" ") || "";
+
+        // Generate PayFast redirect URL
+        const payfastParams = {
+            merchant_id: process.env.PAYFAST_MERCHANT_ID,
+            merchant_key: process.env.PAYFAST_MERCHANT_KEY,
+            return_url: `${process.env.BASE_URL}/payment-success.html`,
+            cancel_url: `${process.env.BASE_URL}/payment-cancel.html`,
+            notify_url: `${process.env.BACKEND_URL}/payfast-itn`,
+            amount: totalAmount.toFixed(2),
+            item_name: "Event Ticket",
+            m_payment_id: bookingId,
+            name_first: firstName,
+            name_last: lastName,
+            email_address: userEmail,
+            cell_number: userPhone
+        };
+
+        const payfastUrl =
+            "https://www.payfast.co.za/eng/process?" +
+            new URLSearchParams(payfastParams);
+
+        res.json({ redirectUrl: payfastUrl });
 
     } catch (err) {
-        console.error('ITN Error:', err);
-        res.status(500).send('Server error');
+        res.status(400).json({ error: err.message });
     }
 });
 
-// Start server
+// ========================
+// 4️⃣ PAYFAST ITN VERIFICATION
+// ========================
+app.post("/payfast-itn", async (req, res) => {
+    res.status(200).send("OK"); // respond immediately to PayFast
+
+    const data = req.body;
+
+    // STEP 1: Verify signature
+    const receivedSignature = data.signature;
+    delete data.signature; // remove signature for hash
+    const paramString = Object.keys(data)
+        .sort()
+        .map(key => `${key}=${data[key]}`)
+        .join("&");
+
+    const generatedSignature = crypto
+        .createHmac("md5", process.env.PAYFAST_PASSPHRASE)
+        .update(paramString)
+        .digest("hex");
+
+    if (generatedSignature !== receivedSignature) {
+        console.error("PayFast signature mismatch");
+        return;
+    }
+
+    // STEP 2: Only proceed if payment complete
+    if (data.payment_status !== "COMPLETE") return;
+
+    try {
+        const bookingRef = db.collection("bookings").doc(data.m_payment_id);
+        const bookingSnap = await bookingRef.get();
+        if (!bookingSnap.exists) return;
+
+        // Update booking to PAID
+        await bookingRef.update({
+            status: "PAID",
+            payfastPaymentId: data.pf_payment_id
+        });
+
+        console.log(`Booking ${data.m_payment_id} marked as PAID`);
+    } catch (err) {
+        console.error("Error updating booking:", err);
+    }
+});
+
+// ========================
+// 5️⃣ START SERVER
+// ========================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`Backend running on port ${PORT}`);
+});
