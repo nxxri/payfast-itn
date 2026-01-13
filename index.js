@@ -158,21 +158,25 @@ app.post("/bookings", async (req, res) => {
             }
 
             // Prepare booking data
+            // Prepare booking data
             const bookingData = {
                 eventId,
                 eventName: eventName || event.title || '',
                 eventDate: eventDate || event.date || '',
                 eventLocation: eventLocation || event.location || '',
                 eventCity: eventCity || event.city || '',
+
+                // FIX: Ensure all customer fields exist
                 customer: {
-                    name: userName.trim(),
-                    email: userEmail.trim(),
+                    name: userName ? userName.trim() : '',
+                    email: userEmail ? userEmail.trim() : '',
                     phone: userPhone ? userPhone.trim() : '',
                     emergencyContact: {
                         name: emergencyContactName ? emergencyContactName.trim() : '',
                         phone: emergencyContactPhone ? emergencyContactPhone.trim() : ''
                     }
                 },
+
                 ticketQuantity,
                 ticketBasePrice: ticketBasePrice || 150,
                 addons: cleanAddons,
@@ -185,11 +189,10 @@ app.post("/bookings", async (req, res) => {
                 updatedAt: admin.firestore.FieldValue.serverTimestamp()
             };
 
-            // Remove any empty strings from emergency contact if not provided
+            // Remove emergencyContact object if both fields are empty
             if (!bookingData.customer.emergencyContact.name && !bookingData.customer.emergencyContact.phone) {
-                delete bookingData.customer.emergencyContact;
+                bookingData.customer.emergencyContact = null; // Set to null instead of deleting
             }
-
             tx.set(bookingDoc, bookingData);
 
             console.log(`Booking created: ${bookingId} for event: ${eventId}`);
