@@ -26,16 +26,8 @@ const db = admin.firestore();
 // 3️⃣ START BOOKING ROUTE
 // ========================
 app.post("/start-booking", async (req, res) => {
-    res.json({ message: "Route is working" });
-});
     try {
-        const {
-            eventId,
-            ticketQuantity,
-            userName,
-            userEmail,
-            userPhone
-        } = req.body;
+        const { eventId, ticketQuantity, userName, userEmail, userPhone } = req.body;
 
         if (!eventId || !ticketQuantity || !userEmail) {
             return res.status(400).json({ error: "Missing data" });
@@ -47,7 +39,6 @@ app.post("/start-booking", async (req, res) => {
         let bookingId;
         let totalAmount;
 
-        // Transaction to safely decrement tickets and create booking
         await db.runTransaction(async (tx) => {
             const eventSnap = await tx.get(eventRef);
             if (!eventSnap.exists) throw new Error("Event not found");
@@ -60,12 +51,10 @@ app.post("/start-booking", async (req, res) => {
 
             totalAmount = event.priceNumber * ticketQuantity;
 
-            // Reserve tickets immediately
             tx.update(eventRef, {
                 ticketsRemaining: event.ticketsRemaining - ticketQuantity
             });
 
-            // Create booking in Firestore
             const bookingDoc = bookingsRef.doc();
             bookingId = bookingDoc.id;
 
@@ -84,12 +73,10 @@ app.post("/start-booking", async (req, res) => {
             });
         });
 
-        // Split userName into first & last name
         const nameParts = userName.trim().split(" ");
         const firstName = nameParts[0] || "";
         const lastName = nameParts.slice(1).join(" ") || "";
 
-        // Generate PayFast redirect URL
         const payfastParams = {
             merchant_id: process.env.PAYFAST_MERCHANT_ID,
             merchant_key: process.env.PAYFAST_MERCHANT_KEY,
@@ -115,7 +102,6 @@ app.post("/start-booking", async (req, res) => {
         res.status(400).json({ error: err.message });
     }
 });
-
 // ========================
 // 4️⃣ PAYFAST ITN VERIFICATION
 // ========================
