@@ -17,11 +17,11 @@ app.use(express.urlencoded({ extended: false }));
 admin.initializeApp({
     credential: admin.credential.cert(
         JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
-    )
+    ),
+    firestore: { ignoreUndefinedProperties: true } // ✅ add this line
 });
 
 const db = admin.firestore();
-
 // ========================
 // 3️⃣ START BOOKING ROUTE
 // ========================
