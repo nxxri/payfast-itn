@@ -26,6 +26,8 @@ const db = admin.firestore();
 // 3️⃣ START BOOKING ROUTE
 // ========================
 app.post("/start-booking", async (req, res) => {
+    res.json({ message: "Route is working" });
+});
     try {
         const {
             eventId,
