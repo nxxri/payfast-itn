@@ -33,7 +33,10 @@ app.post('/payfast-notify', async (req, res) => {
             { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
         );
 
-        if (response.data === 'VALID') {
+        console.log("PayFast validate response:", JSON.stringify(response.data));
+
+
+        if (String(response.data).trim() === 'VALID') {
             const bookingId = data.m_payment_id;
 
             // Update booking in Firestore
