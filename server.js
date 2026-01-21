@@ -1,7 +1,7 @@
 ﻿// backend/index.js
 import express from "express";
 import cors from "cors";
-import fetch from "node-fetch";
+import fetch from "node-fetch"; // ✅ ESM import
 import admin from "firebase-admin";
 import dotenv from "dotenv";
 
@@ -13,13 +13,16 @@ app.use(express.json());
 
 // ---------------- FIREBASE INIT ----------------
 try {
-    admin.initializeApp({
-        credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_KEY))
-    });
-    console.log("✅ Firebase initialized successfully");
+    if (!admin.apps.length) {
+        admin.initializeApp({
+            credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_KEY))
+        });
+        console.log("✅ Firebase initialized successfully");
+    }
 } catch (err) {
     console.error("❌ Firebase initialization error:", err);
 }
+
 const db = admin.firestore();
 
 // ---------------- CREATE YOCO CHECKOUT ----------------
@@ -45,7 +48,7 @@ app.post("/create-checkout", async (req, res) => {
                 "Content-Type": "application/json"
             },
             body: JSON.stringify({
-                amountInCents: amount, // amount in cents
+                amountInCents: amount,
                 currency: "ZAR",
                 reference: bookingId,
                 customerEmail: email,
@@ -57,12 +60,12 @@ app.post("/create-checkout", async (req, res) => {
 
         const data = await response.json();
 
-        if (response.ok && data.checkout) {
-            res.json({ redirectUrl: data.checkout.checkoutPageUrl });
-        } else {
+        if (!response.ok) {
             console.error("Yoco API error:", data);
-            res.status(500).json({ error: "Failed to create Yoco checkout" });
+            return res.status(500).json({ error: "Failed to create Yoco checkout" });
         }
+
+        res.json({ redirectUrl: data.checkout.checkoutPageUrl });
     } catch (err) {
         console.error("Checkout creation error:", err);
         res.status(500).json({ error: "Internal server error" });
@@ -87,7 +90,6 @@ app.post("/yoco-webhook", async (req, res) => {
         if (event.type === "payment.succeeded" && bookingData.status === "PENDING") {
             await bookingRef.update({ status: "PAID" });
 
-            // Decrement tickets remaining in event
             const eventRef = db.collection("events").doc(bookingData.eventId);
             await eventRef.update({
                 ticketsRemaining: admin.firestore.FieldValue.increment(-ticketQty)
