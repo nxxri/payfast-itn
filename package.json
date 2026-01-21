@@ -2,6 +2,7 @@
   "name": "salwa-payfast-backend",
   "version": "1.0.0",
   "description": "PayFast ITN handler for Salwa Collective",
+  "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
