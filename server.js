@@ -6,6 +6,8 @@ const fetch = (...args) =>
 
 const admin = require('firebase-admin');
 
+const app = express(); // <-- you were missing this line
+
 const firebaseConfig = {
     type: process.env.FIREBASE_TYPE,
     project_id: process.env.FIREBASE_PROJECT_ID,
@@ -25,6 +27,7 @@ admin.initializeApp({
 });
 
 const db = admin.firestore();
+
 // Middleware
 app.use(express.json());
 app.use(cors({
