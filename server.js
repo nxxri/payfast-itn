@@ -12,6 +12,7 @@ const app = express();
 admin.initializeApp({
     credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_KEY))
 });
+firebaseConfig.private_key = firebaseConfig.private_key.replace(/\\n/g, '\n');
 
 const db = admin.firestore();
 
