@@ -1,116 +1,77 @@
-﻿// backend/index.js
-import express from "express";
-import cors from "cors";
-import fetch from "node-fetch"; // ESM import
-import admin from "firebase-admin";
-import dotenv from "dotenv";
-
-dotenv.config();
+﻿require('dotenv').config();
+const express = require('express');
+const fetch = require('node-fetch'); // Node 18+ can use global fetch
+const cors = require('cors');
+const admin = require('firebase-admin');
 
 const app = express();
-app.use(cors());
-app.use(express.json());
 
-// ---------------- FIREBASE INIT ----------------
-try {
-    if (!admin.apps.length) {
-        admin.initializeApp({
-            credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_KEY))
-        });
-        console.log("✅ Firebase initialized successfully");
-    }
-} catch (err) {
-    console.error("❌ Firebase initialization error:", err);
-}
+// Initialize Firebase Admin
+admin.initializeApp({
+    credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_KEY))
+});
 
 const db = admin.firestore();
 
-// ---------------- CREATE YOCO CHECKOUT ----------------
-app.post("/create-checkout", async (req, res) => {
-    const { bookingId, amount, email, name } = req.body;
+app.use(express.json());
 
-    if (!bookingId || !amount || !email || !name) {
-        return res.status(400).json({ error: "bookingId, amount, email, and name are required" });
-    }
+// Enable CORS for your frontend only
+app.use(cors({
+    origin: process.env.FRONTEND_URL
+}));
 
+// Health check
+app.get('/', (req, res) => {
+    res.send('Backend is running!');
+});
+
+// Create Yoco checkout
+app.post('/create-checkout', async (req, res) => {
     try {
-        // Make sure booking exists in Firebase
-        const bookingSnap = await db.collection("bookings").doc(bookingId).get();
-        if (!bookingSnap.exists) {
-            return res.status(404).json({ error: "Booking not found" });
+        const { amount, metadata } = req.body;
+
+        if (!amount || isNaN(amount)) {
+            return res.status(400).json({ error: 'Amount (in cents) is required and must be a number' });
         }
 
-        // Create Yoco checkout
-        const response = await fetch("https://online.yoco.com/v1/checkout", {
-            method: "POST",
+        // Prepare request to Yoco
+        const response = await fetch('https://payments.yoco.com/api/checkouts', {
+            method: 'POST',
             headers: {
-                Authorization: `Bearer ${process.env.YOCO_SECRET}`,
-                "Content-Type": "application/json"
+                'Authorization': `Bearer ${process.env.YOCO_SECRET}`,
+                'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                amountInCents: amount,
-                currency: "ZAR",
-                reference: bookingId,
-                customerEmail: email,
-                customerName: name,
-                successUrl: `${process.env.FRONTEND_URL}/success?bookingId=${bookingId}`,
-                cancelUrl: `${process.env.FRONTEND_URL}/cancel?bookingId=${bookingId}`
+                amount,
+                currency: 'ZAR',
+                successUrl: `${process.env.FRONTEND_URL}/payment-success`,
+                cancelUrl: `${process.env.FRONTEND_URL}/payment-cancelled`,
+                failureUrl: `${process.env.FRONTEND_URL}/payment-failed`,
+                metadata: metadata || {}
             })
         });
 
+        if (!response.ok) {
+            const text = await response.text();
+            return res.status(response.status).json({ error: text });
+        }
+
         const data = await response.json();
 
-        if (!response.ok) {
-            console.error("Yoco API error:", data);
-            return res.status(500).json({ error: "Failed to create Yoco checkout" });
-        }
+        // Optional: store checkout info in Firestore
+        await db.collection('checkouts').doc(data.id).set({
+            ...data,
+            createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
 
-        res.json({ redirectUrl: data.checkout.checkoutPageUrl });
+        res.json(data);
+
     } catch (err) {
-        console.error("Checkout creation error:", err);
-        res.status(500).json({ error: "Internal server error" });
+        console.error('Yoco checkout error:', err);
+        res.status(500).json({ error: 'Payment API failed', details: err.message });
     }
 });
 
-// ---------------- YOCO WEBHOOK ----------------
-app.post("/yoco-webhook", async (req, res) => {
-    const event = req.body;
-
-    try {
-        const bookingId = event.data?.reference;
-        if (!bookingId) return res.sendStatus(400);
-
-        const bookingRef = db.collection("bookings").doc(bookingId);
-        const bookingSnap = await bookingRef.get();
-        if (!bookingSnap.exists) return res.sendStatus(404);
-
-        const bookingData = bookingSnap.data();
-        const ticketQty = bookingData.ticketQuantity || 1;
-
-        if (event.type === "payment.succeeded" && bookingData.status === "PENDING") {
-            await bookingRef.update({ status: "PAID" });
-
-            const eventRef = db.collection("events").doc(bookingData.eventId);
-            await eventRef.update({
-                ticketsRemaining: admin.firestore.FieldValue.increment(-ticketQty)
-            });
-        }
-
-        if (event.type === "payment.failed") {
-            await bookingRef.update({ status: "CANCELLED" });
-        }
-
-        res.sendStatus(200);
-    } catch (err) {
-        console.error("Webhook error:", err);
-        res.sendStatus(500);
-    }
-});
-
-// ---------------- HEALTH CHECK ----------------
-app.get("/", (req, res) => res.send("Yoco backend running"));
-app.get("/ping", (req, res) => res.send("pong"));
-
-// ---------------- START SERVER ----------------
+// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
