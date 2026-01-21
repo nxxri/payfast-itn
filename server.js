@@ -1,7 +1,7 @@
 ﻿// backend/index.js
 import express from "express";
 import cors from "cors";
-import fetch from "node-fetch"; // ✅ ESM import
+import fetch from "node-fetch"; // ESM import
 import admin from "firebase-admin";
 import dotenv from "dotenv";
 
@@ -109,8 +109,6 @@ app.post("/yoco-webhook", async (req, res) => {
 
 // ---------------- HEALTH CHECK ----------------
 app.get("/", (req, res) => res.send("Yoco backend running"));
-
-// ---------------- TEST ROUTE ----------------
 app.get("/ping", (req, res) => res.send("pong"));
 
 // ---------------- START SERVER ----------------
