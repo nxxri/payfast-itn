@@ -3,18 +3,15 @@ const express = require('express');
 const cors = require('cors');
 const fetch = (...args) =>
     import('node-fetch').then(({ default: fetch }) => fetch(...args));
-const admin = require('firebase-admin');
 
+const admin = require('firebase-admin');
 const app = express();
 
-// ----------------------
-// Firebase initialization
-// ----------------------
+// Fix Firebase private key formatting before initializing
 const firebaseConfig = JSON.parse(process.env.FIREBASE_KEY);
-
-// Fix the private key newlines
 firebaseConfig.private_key = firebaseConfig.private_key.replace(/\\n/g, '\n');
 
+// Firebase Admin
 admin.initializeApp({
     credential: admin.credential.cert(firebaseConfig)
 });
@@ -27,7 +24,7 @@ app.use(cors({
     origin: process.env.FRONTEND_URL
 }));
 
-// Health check
+// Health check (VERY IMPORTANT)
 app.get('/', (req, res) => {
     res.send('Salwa backend is running 🚀');
 });
@@ -63,7 +60,7 @@ app.post('/create-checkout', async (req, res) => {
             return res.status(response.status).json(data);
         }
 
-        // Save checkout to Firestore
+        // Save checkout to Firestore (optional but recommended)
         await db.collection('checkouts').doc(data.id).set({
             ...data,
             createdAt: admin.firestore.FieldValue.serverTimestamp()
