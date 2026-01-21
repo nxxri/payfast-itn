@@ -15,7 +15,7 @@ admin.initializeApp({
 });
 const db = admin.firestore();
 
-// ---------------- CREATE Yoco CHECKOUT ----------------
+// ---------------- CREATE YOCO CHECKOUT ----------------
 app.post("/create-checkout", async (req, res) => {
     const { bookingId } = req.body;
 
@@ -35,7 +35,7 @@ app.post("/create-checkout", async (req, res) => {
                 "Content-Type": "application/json"
             },
             body: JSON.stringify({
-                amount: totalAmount * 100, // cents
+                amount: totalAmount * 100, // Yoco expects amount in cents
                 currency: "ZAR",
                 reference: bookingId,
                 successUrl: `${process.env.FRONTEND_URL}/success?bookingId=${bookingId}`,
