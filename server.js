@@ -1,62 +1,97 @@
-﻿const express = require('express');
-const bodyParser = require('body-parser');
-const admin = require('firebase-admin');
-const axios = require('axios');
-const querystring = require('querystring');
+﻿import express from "express";
+import cors from "cors";
+import fetch from "node-fetch";
+import admin from "firebase-admin";
+import dotenv from "dotenv";
 
+dotenv.config();
 const app = express();
-app.use(bodyParser.urlencoded({ extended: false }));
+app.use(cors());
+app.use(express.json());
 
-// Initialize Firebase using environment variable from Render
-const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
-
+// ---------------- FIREBASE INIT ----------------
 admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
+    credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_KEY))
 });
-
 const db = admin.firestore();
-const bookingsCollection = 'bookings'; // Your Firestore collection name
 
-// Use sandbox or live URL based on environment variable
-const PAYFAST_URL = process.env.PAYFAST_SANDBOX === 'true'
-    ? 'https://sandbox.payfast.co.za/eng/query/validate'
-    : 'https://www.payfast.co.za/eng/query/validate';
+// ---------------- CREATE Yoco CHECKOUT ----------------
+app.post("/create-checkout", async (req, res) => {
+    const { bookingId } = req.body;
 
-app.post('/payfast-notify', async (req, res) => {
-    const data = req.body;
+    if (!bookingId) return res.status(400).json({ error: "bookingId required" });
 
     try {
-        // Verify ITN with PayFast
-        const response = await axios.post(
-            PAYFAST_URL,
-            querystring.stringify(data),
-            { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-        );
+        const bookingSnap = await db.collection("bookings").doc(bookingId).get();
+        if (!bookingSnap.exists) return res.status(404).json({ error: "Booking not found" });
 
-        if (response.data === 'VALID') {
-            const bookingId = data.m_payment_id;
+        const booking = bookingSnap.data();
+        const totalAmount = booking.totalAmount || 0;
 
-            // Update booking in Firestore
-            await db.collection(bookingsCollection).doc(bookingId).set({
-                status: 'paid',
-                amount: data.amount_gross,
-                payer_email: data.email_address,
-                timestamp: admin.firestore.FieldValue.serverTimestamp()
-            });
+        const response = await fetch("https://payments.yoco.com/api/checkouts", {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${process.env.YOCO_SECRET}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                amount: totalAmount * 100, // cents
+                currency: "ZAR",
+                reference: bookingId,
+                successUrl: `${process.env.FRONTEND_URL}/success?bookingId=${bookingId}`,
+                cancelUrl: `${process.env.FRONTEND_URL}/cancel?bookingId=${bookingId}`
+            })
+        });
 
-            console.log(`Payment verified and booking ${bookingId} updated`);
-        } else {
-            console.error('Invalid ITN:', data);
-        }
+        const data = await response.json();
+        res.json({ redirectUrl: data.redirectUrl });
 
-        // Always respond 200 to PayFast
-        res.status(200).send('OK');
     } catch (err) {
-        console.error('Error processing ITN:', err);
-        res.status(500).send('Server error');
+        console.error("Checkout creation error:", err);
+        res.status(500).json({ error: "Failed to create checkout" });
     }
 });
 
-// Start server on Render assigned PORT
-const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`Server running on port ${port}`));
+// ---------------- YOCO WEBHOOK ----------------
+app.post("/yoco-webhook", async (req, res) => {
+    const event = req.body;
+
+    try {
+        const bookingId = event.data?.reference;
+        if (!bookingId) return res.sendStatus(400);
+
+        const bookingRef = db.collection("bookings").doc(bookingId);
+        const bookingSnap = await bookingRef.get();
+        if (!bookingSnap.exists) return res.sendStatus(404);
+
+        const bookingData = bookingSnap.data();
+        const ticketQty = bookingData.ticketQuantity || 1;
+
+        if (event.type === "payment.succeeded" && bookingData.status === "PENDING") {
+            await bookingRef.update({ status: "PAID" });
+
+            // Decrement ticketsRemaining dynamically
+            const eventRef = db.collection("events").doc(bookingData.eventId);
+            await eventRef.update({
+                ticketsRemaining: admin.firestore.FieldValue.increment(-ticketQty)
+            });
+        }
+
+        if (event.type === "payment.failed") {
+            await bookingRef.update({ status: "CANCELLED" });
+        }
+
+        res.sendStatus(200);
+
+    } catch (err) {
+        console.error("Webhook error:", err);
+        res.sendStatus(500);
+    }
+});
+
+// ---------------- HEALTH CHECK ----------------
+app.get("/", (req, res) => res.send("Yoco backend running"));
+
+// ---------------- START SERVER ----------------
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
