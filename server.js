@@ -110,6 +110,9 @@ app.post("/yoco-webhook", async (req, res) => {
 // ---------------- HEALTH CHECK ----------------
 app.get("/", (req, res) => res.send("Yoco backend running"));
 
+// ---------------- TEST ROUTE ----------------
+app.get("/ping", (req, res) => res.send("pong"));
+
 // ---------------- START SERVER ----------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
