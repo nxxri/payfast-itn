@@ -66,7 +66,11 @@ app.post('/create-checkout', async (req, res) => {
         }
 
         // Save checkout to Firestore (optional but recommended)
+        // Save checkout to Firestore with link to booking
         await db.collection('checkouts').doc(data.id).set({
+            bookingTicketNumber: metadata.bookingId,  // your booking number
+            eventId: metadata.eventId,               // event ID
+            checkoutId: data.id,                     // Yoco checkout ID
             ...data,
             createdAt: admin.firestore.FieldValue.serverTimestamp()
         });
@@ -83,55 +87,51 @@ app.post('/yoco-webhook', express.json(), async (req, res) => {
     try {
         const event = req.body;
 
-        // Log the entire webhook payload for debugging
         console.log('Received webhook:', JSON.stringify(event, null, 2));
 
-        // Try to access metadata safely
-        const metadata = event?.data?.metadata || event?.data?.object?.metadata;
-        if (!metadata) {
-            console.warn('Missing metadata in webhook payload');
-            return res.status(400).send('Missing metadata');
-        }
-
-        const bookingId = metadata.bookingId;
-        const eventId = metadata.eventId;
-
-        if (!bookingId || !eventId) {
-            console.warn('Metadata missing bookingId or eventId:', metadata);
-            return res.status(400).send('Incomplete metadata');
-        }
-
-        // Only act on successful payment events (adjust this depending on Yoco's exact event type)
-        if (event.type !== 'checkout.session.completed') {
-            console.log('Webhook event not a completed checkout, ignoring');
+        // Only act on successful payments
+        if (event.type !== 'payment.succeeded') {
+            console.log('Webhook event not a successful payment, ignoring');
             return res.sendStatus(200);
         }
 
-        // 🔥 Update booking status in Firestore
+        const checkoutId = event.payload?.metadata?.checkoutId;
+        if (!checkoutId) {
+            console.warn('Missing checkoutId in webhook payload');
+            return res.sendStatus(400);
+        }
+
+        // 🔥 Find the booking using checkoutId
+        const checkoutSnap = await db.collection('checkouts').doc(checkoutId).get();
+        if (!checkoutSnap.exists) {
+            console.error("Checkout not found:", checkoutId);
+            return res.sendStatus(404);
+        }
+
+        const { bookingTicketNumber, eventId } = checkoutSnap.data();
+
+        // 🔥 Update booking
         const bookingsSnapshot = await db.collection('bookings')
-            .where('ticketNumber', '==', bookingId)
+            .where('ticketNumber', '==', bookingTicketNumber)
             .get();
 
-        if (bookingsSnapshot.empty) {
-            console.warn('No booking found for ticketNumber:', bookingId);
-        } else {
+        if (!bookingsSnapshot.empty) {
             bookingsSnapshot.forEach(doc => {
                 doc.ref.update({
                     status: 'CONFIRMED',
                     paidAt: admin.firestore.FieldValue.serverTimestamp()
                 });
             });
-            console.log(`Booking ${bookingId} confirmed`);
+            console.log(`Booking ${bookingTicketNumber} confirmed`);
+        } else {
+            console.warn('No booking found for ticketNumber:', bookingTicketNumber);
         }
 
         // 🔥 Update event spots
         const eventRef = db.collection('events').doc(eventId);
         await db.runTransaction(async (tx) => {
             const eventSnap = await tx.get(eventRef);
-            if (!eventSnap.exists) {
-                console.warn('Event not found for eventId:', eventId);
-                return;
-            }
+            if (!eventSnap.exists) return;
 
             const available = eventSnap.data().availableSpots || 0;
             tx.update(eventRef, {
@@ -147,7 +147,6 @@ app.post('/yoco-webhook', express.json(), async (req, res) => {
         res.sendStatus(500);
     }
 });
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
