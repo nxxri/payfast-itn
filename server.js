@@ -78,68 +78,67 @@ app.post('/create-checkout', async (req, res) => {
         res.status(500).json({ error: 'Payment API failed' });
     }
 });
-// Send yoco webhook
+// Webhook to handle Yoco payment events
 app.post('/yoco-webhook', express.json(), async (req, res) => {
     try {
         const event = req.body;
 
-        if (event.type !== 'payment.succeeded') {
+        // Log the entire webhook payload for debugging
+        console.log('Received webhook:', JSON.stringify(event, null, 2));
+
+        // Try to access metadata safely
+        const metadata = event?.data?.metadata || event?.data?.object?.metadata;
+        if (!metadata) {
+            console.warn('Missing metadata in webhook payload');
+            return res.status(400).send('Missing metadata');
+        }
+
+        const bookingId = metadata.bookingId;
+        const eventId = metadata.eventId;
+
+        if (!bookingId || !eventId) {
+            console.warn('Metadata missing bookingId or eventId:', metadata);
+            return res.status(400).send('Incomplete metadata');
+        }
+
+        // Only act on successful payment events (adjust this depending on Yoco's exact event type)
+        if (event.type !== 'checkout.session.completed') {
+            console.log('Webhook event not a completed checkout, ignoring');
             return res.sendStatus(200);
         }
 
-        const metadata = event?.data?.metadata;
-
-        if (!metadata?.bookingId || !metadata?.eventId) {
-            console.error('Missing metadata:', metadata);
-            return res.sendStatus(400);
-        }
-
-        const { bookingId, eventId } = metadata;
-
-        const bookingSnap = await db
-            .collection('bookings')
+        // 🔥 Update booking status in Firestore
+        const bookingsSnapshot = await db.collection('bookings')
             .where('ticketNumber', '==', bookingId)
-            .limit(1)
             .get();
 
-        if (bookingSnap.empty) {
-            console.error('Booking not found:', bookingId);
-            return res.sendStatus(404);
-        }
-
-        const bookingDoc = bookingSnap.docs[0];
-        const bookingData = bookingDoc.data();
-
-        // ✅ Prevent double processing
-        if (bookingData.status === 'CONFIRMED') {
-            console.log('Booking already confirmed:', bookingId);
-            return res.sendStatus(200);
-        }
-
-        // 🔥 Transaction for consistency
-        await db.runTransaction(async (tx) => {
-            const eventRef = db.collection('events').doc(eventId);
-            const eventSnap = await tx.get(eventRef);
-
-            if (!eventSnap.exists) {
-                throw new Error('Event not found');
-            }
-
-            const available = eventSnap.data().availableSpots;
-
-            if (available <= 0) {
-                throw new Error('No spots left');
-            }
-
-            tx.update(bookingDoc.ref, {
-                status: 'CONFIRMED',
-                paidAt: admin.firestore.FieldValue.serverTimestamp()
+        if (bookingsSnapshot.empty) {
+            console.warn('No booking found for ticketNumber:', bookingId);
+        } else {
+            bookingsSnapshot.forEach(doc => {
+                doc.ref.update({
+                    status: 'CONFIRMED',
+                    paidAt: admin.firestore.FieldValue.serverTimestamp()
+                });
             });
+            console.log(`Booking ${bookingId} confirmed`);
+        }
 
+        // 🔥 Update event spots
+        const eventRef = db.collection('events').doc(eventId);
+        await db.runTransaction(async (tx) => {
+            const eventSnap = await tx.get(eventRef);
+            if (!eventSnap.exists) {
+                console.warn('Event not found for eventId:', eventId);
+                return;
+            }
+
+            const available = eventSnap.data().availableSpots || 0;
             tx.update(eventRef, {
-                availableSpots: available - 1
+                availableSpots: Math.max(0, available - 1)
             });
         });
+        console.log(`Event ${eventId} spots updated`);
 
         res.sendStatus(200);
 
@@ -148,7 +147,6 @@ app.post('/yoco-webhook', express.json(), async (req, res) => {
         res.sendStatus(500);
     }
 });
-
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
