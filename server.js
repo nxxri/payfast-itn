@@ -78,6 +78,77 @@ app.post('/create-checkout', async (req, res) => {
         res.status(500).json({ error: 'Payment API failed' });
     }
 });
+// Send yoco webhook
+app.post('/yoco-webhook', express.json(), async (req, res) => {
+    try {
+        const event = req.body;
+
+        if (event.type !== 'payment.succeeded') {
+            return res.sendStatus(200);
+        }
+
+        const metadata = event?.data?.metadata;
+
+        if (!metadata?.bookingId || !metadata?.eventId) {
+            console.error('Missing metadata:', metadata);
+            return res.sendStatus(400);
+        }
+
+        const { bookingId, eventId } = metadata;
+
+        const bookingSnap = await db
+            .collection('bookings')
+            .where('ticketNumber', '==', bookingId)
+            .limit(1)
+            .get();
+
+        if (bookingSnap.empty) {
+            console.error('Booking not found:', bookingId);
+            return res.sendStatus(404);
+        }
+
+        const bookingDoc = bookingSnap.docs[0];
+        const bookingData = bookingDoc.data();
+
+        // ✅ Prevent double processing
+        if (bookingData.status === 'CONFIRMED') {
+            console.log('Booking already confirmed:', bookingId);
+            return res.sendStatus(200);
+        }
+
+        // 🔥 Transaction for consistency
+        await db.runTransaction(async (tx) => {
+            const eventRef = db.collection('events').doc(eventId);
+            const eventSnap = await tx.get(eventRef);
+
+            if (!eventSnap.exists) {
+                throw new Error('Event not found');
+            }
+
+            const available = eventSnap.data().availableSpots;
+
+            if (available <= 0) {
+                throw new Error('No spots left');
+            }
+
+            tx.update(bookingDoc.ref, {
+                status: 'CONFIRMED',
+                paidAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+
+            tx.update(eventRef, {
+                availableSpots: available - 1
+            });
+        });
+
+        res.sendStatus(200);
+
+    } catch (err) {
+        console.error('Webhook error:', err);
+        res.sendStatus(500);
+    }
+});
+
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
