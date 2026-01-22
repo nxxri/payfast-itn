@@ -8,11 +8,18 @@ const admin = require('firebase-admin');
 
 const app = express();
 
-// Firebase Admin
+// Parse Firebase config from environment variable
+const firebaseConfig = JSON.parse(process.env.FIREBASE_KEY);
+
+// Fix newline characters in private key if needed
+if (firebaseConfig.private_key) {
+    firebaseConfig.private_key = firebaseConfig.private_key.replace(/\\n/g, '\n');
+}
+
+// Firebase Admin - pass the modified config
 admin.initializeApp({
-    credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_KEY))
+    credential: admin.credential.cert(firebaseConfig)
 });
-firebaseConfig.private_key = firebaseConfig.private_key.replace(/\\n/g, '\n');
 
 const db = admin.firestore();
 
