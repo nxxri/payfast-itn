@@ -52,7 +52,7 @@ app.post('/create-checkout', async (req, res) => {
             body: JSON.stringify({
                 amount,
                 currency: 'ZAR',
-                successUrl: `${process.env.FRONTEND_URL}/payment-success.html`,
+                successUrl: `${process.env.FRONTEND_URL}/payment-success.html?checkoutId=${data.id}`,
                 cancelUrl: `${process.env.FRONTEND_URL}/payment-cancelled.html`,
                 failureUrl: `${process.env.FRONTEND_URL}/payment-failed.html`,
                 metadata: metadata || {}
